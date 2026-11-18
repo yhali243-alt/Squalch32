@@ -21,6 +21,8 @@ jobs:
           g++ -O2 -std=c++17 analyze.cpp -o analyze && ./analyze
           mkdir -p demos && g++ -O2 -std=c++17 render_demo.cpp -o render_demo && ./render_demo demos
           g++ -O2 -std=c++17 render_reference.cpp -o render_reference && ./render_reference demos
+          g++ -O2 -std=c++17 poly_test.cpp -o poly_test && ./poly_test
+          g++ -O2 -std=c++17 render_poly.cpp -o render_poly && ./render_poly demos
       - uses: actions/upload-artifact@v4
         with:
           name: SqueFM-demos
