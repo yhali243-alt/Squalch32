@@ -55,6 +55,20 @@ copy -> side), Vel > Timbre, Key Scale, Low Cut. Families in `Presets.h::applyFm
 FM timbre / character / resonance / drive (0.5 = neutral, lane depth scales), probability, accent.
 Probability only consumes RNG when < 1 (keeps old projects bit-identical).
 
+## Poly sequencer (v5, `PolySeq.h` + engine `tickPolySeq`)
+- Off by default (`psOn`). When on, MIDI note-on = start + root reference (if `psFollow`), last note-off = stop.
+  The voice is played by `triggerVoice()`; the MIDI held-note list is never touched by the sequencer.
+- Three lanes (trigger / pitch / mod), each: steps 1-32, rate (`kRateBeats`, incl. dotted + triplets),
+  direction (fwd / rev / ping-pong), phase in steps (may be negative). Position is computed from beats since
+  start (`laneCounter`), never accumulated per lane -> no drift; host PPQ drives it while the transport runs,
+  a free beat clock when stopped; transport start re-aligns.
+- A trigger step uses the pitch lane's CURRENT degree. Scales: `kScales` (order permanent), `degreeToMidi`
+  handles negative degrees / octave wrap. Own RNG (`psRng`, reseeded at start) for probability.
+- Mod lane -> one destination (FM bright/char/fb, res, cutoff, drive), smoothed, via `psMod()`.
+- Tests: `poly_test.cpp` (scales x12 roots, 5v7 exact sample timing, block sizes, 10-min drift, triplet/dotted,
+  reverse/ping-pong, negative phase, tempo change, transport, note-off release, probability determinism).
+  Demos: `render_poly.cpp`.
+
 ## Compatibility rules (hard)
 - Parameter IDs, ranges, choice lists and order are permanent. Append new params at the end of
   `paramTable()`; new choices only at the end of a list (prefer new params over changing lists).
