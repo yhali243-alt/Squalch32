@@ -165,6 +165,7 @@ struct Params
     float delayMix = 0.f, delayFb = 0.45f, delayTone = 0.5f, delayMod = 0.2f; int delayDiv = 7; bool pingPong = true;
     float reverbMix = 0.f, reverbSize = 0.7f, reverbDamp = 0.5f;
     float outGainDb = 0.f;
+    int   quality = 1;          // 0 = 2x oversampling, 1 = 4x (below 60 kHz host rate)
 };
 
 // ------------------------------------------------------------------ util -----
@@ -366,6 +367,8 @@ public:
     void prepare (double sampleRate)
     {
         sr = (float) sampleRate; osr = sr * 2.f;
+        dcR = std::exp (-kTwoPi * 6.f / sr);
+        smCoef = 1.f - std::exp (-1.f / (0.004f * sr));
         delayBufLen = (int) (sr * 4.f) + 4;
         delayL.assign ((size_t) delayBufLen, 0.f); delayR.assign ((size_t) delayBufLen, 0.f);
         combLen = (int) (sr / 15.f) + 8;
@@ -376,7 +379,7 @@ public:
 
     void reset()
     {
-        ladder.reset(); dec.reset(); fdn.reset();
+        ladder.reset(); dec.reset(); decA.reset(); fdn.reset(); dcX = dcY = 0.f; smCut = -1.f;
         std::fill (delayL.begin(), delayL.end(), 0.f); std::fill (delayR.begin(), delayR.end(), 0.f);
         std::fill (combBuf.begin(), combBuf.end(), 0.f);
         for (auto& f : formant) f.reset();
@@ -422,7 +425,8 @@ public:
     void render (float* outL, float* outR, int n)
     {
         prepareBlock();
-        for (int i = 0; i < n; ++i) { float l, r; renderSample (l, r); outL[i] = l; outR[i] = r; }
+        const double dppq = beatsPerSec() / (double) sr;
+        for (int i = 0; i < n; ++i) { float l, r; renderSample (l, r); outL[i] = l; outR[i] = r; if (playing) ppq += dppq; }
     }
 
     // value of a step's LFO at phase p (unipolar 0..1) — shared with the GUI preview
@@ -458,7 +462,9 @@ private:
 
     MorphOsc oscA, oscB, oscSub;
     float fmPhase = 0.f, fmPrev1 = 0.f, fmPrev2 = 0.f;
-    Ladder ladder; Decimator2x dec; Env fEnv, aEnv, mEnv; Rng rng;
+    Ladder ladder; Decimator2x dec, decA;
+    int osFactor = 2; float dcX = 0.f, dcY = 0.f, dcR = 0.9995f;
+    float smCut = -1.f, smRes = 0.f, smDrive = 0.f, smFm = 0.f, smGain = 1.f, smMacro[kNumMacros] {}, smCoef = 1.f; Env fEnv, aEnv, mEnv; Rng rng;
     float lastFilterOut = 0.f, pitchEnvV = 0.f, pitchEnvCoef = 0.f;
 
     // sequencer
@@ -505,6 +511,9 @@ private:
         pitchEnvCoef = std::exp (-1.f / (std::max (0.001f, P.pitchEnvDecay) * sr));
         spitCoef = std::exp (-1.f / (std::max (0.002f, P.spitDecay) * sr));
         outGain = std::pow (10.f, P.outGainDb / 20.f);
+        const int wantOs = (P.quality >= 1 && sr < 60000.f) ? 4 : 2;
+        if (wantOs != osFactor) { osFactor = wantOs; osr = sr * (float) osFactor; dec.reset(); decA.reset(); }
+        if (smCut < 0.f) { smCut = P.cutoff; smRes = P.resonance; smDrive = P.drive; smFm = P.fmIndex; smGain = outGain; for (int m = 0; m < kNumMacros; ++m) smMacro[m] = P.macro[(size_t) m]; }
     }
 
     double beatsPerSec() const { return bpm / 60.0; }
@@ -615,6 +624,11 @@ private:
     // ------------------------------------------------------------ render -----
     void renderSample (float& outL, float& outR)
     {
+        // ---------- smoothed continuous controls (no zipper on automation) ----------
+        smCut += (P.cutoff - smCut) * smCoef; smRes += (P.resonance - smRes) * smCoef;
+        smDrive += (P.drive - smDrive) * smCoef; smFm += (P.fmIndex - smFm) * smCoef; smGain += (outGain - smGain) * smCoef;
+        for (int m = 0; m < kNumMacros; ++m) smMacro[m] += (P.macro[(size_t) m] - smMacro[m]) * smCoef;
+
         // ---------- mod sources ----------
         const float seqN = tickSequencer();
         for (int i = 0; i < kNumLfos; ++i)
@@ -643,7 +657,7 @@ private:
         src[SrcModEnv] = me; src[SrcFiltEnv] = fe; src[SrcAmpEnv] = ae; src[SrcPitchEnv] = pitchEnvV;
         src[SrcVelocity] = velocity; src[SrcModWheel] = modWheelVal; src[SrcKey] = clampf ((currentNote - 60.f) / 48.f, -1.f, 1.f);
         src[SrcRandom] = noteRandom; src[SrcSpit] = spitV; src[SrcChaos] = chaosSrcOut;
-        for (int m = 0; m < kNumMacros; ++m) src[SrcMacro1 + m] = P.macro[(size_t) m];
+        for (int m = 0; m < kNumMacros; ++m) src[SrcMacro1 + m] = smMacro[m];
 
         // ---------- matrix ----------
         std::fill (std::begin (modDst), std::end (modDst), 0.f);
@@ -671,13 +685,13 @@ private:
         if (P.fmMode == 0) fmFreq = fA * P.fmRatio * std::exp2 ((P.fmFine * 0.01f + md[DstFmRatio] * 24.f) / 12.f);
         else               fmFreq = P.fmHz * std::exp2 (md[DstFmRatio] * 4.f);
         const float fmInc = clampf (fmFreq / osr, 0.f, 0.45f);
-        const float fmIdx = clampf (P.fmIndex + md[DstFmIndex], 0.f, 1.5f);
+        const float fmIdx = clampf (smFm + md[DstFmIndex], 0.f, 1.5f);
         const float pmDepth = fmIdx * fmIdx * 2.5f;               // in cycles
         const float fmFb = clampf (P.fmFeedback + md[DstFmFeedback], 0.f, 1.f) * 0.35f;
 
         // ---------- filter ----------
         const float velF = 1.f - P.velToFilter + P.velToFilter * velocity;
-        const float baseOct = std::log2 (std::max (20.f, P.cutoff));
+        const float baseOct = std::log2 (std::max (20.f, smCut));
         const float seqOct  = std::log2 (normToHz (seqN));
         const float depth   = P.seqOn ? clampf (P.seqDepth + md[DstSeqDepth], 0.f, 1.f) : 0.f;
         float cutOct = baseOct + (seqOct - baseOct) * depth
@@ -686,9 +700,9 @@ private:
                      + md[DstCutoff] * 6.f;
         const float fc = clampf (std::exp2 (cutOct), 16.f, std::min (20000.f, osr * 0.42f));
         const float g = std::tan (kPi * fc / osr), G = g / (1.f + g);
-        const float res = clampf (P.resonance + P.resEnvAmount * fe + md[DstRes] * 0.6f, 0.f, 1.15f);
+        const float res = clampf (smRes + P.resEnvAmount * fe + md[DstRes] * 0.6f, 0.f, 1.15f);
         const float k = res * 4.1f;
-        const float drive = clampf (P.drive + md[DstDrive] * 0.6f, 0.f, 1.f);
+        const float drive = clampf (smDrive + md[DstDrive] * 0.6f, 0.f, 1.f);
         const float dGain = 1.f + drive * drive * 22.f, dBias = 0.15f * drive, dComp = 1.f / (1.f + drive * 2.2f);
         const float wA = clampf (P.waveA + md[DstWaveA] * 3.f, 0.f, 3.f);
         const float wB = clampf (P.waveB + md[DstWaveB] * 3.f, 0.f, 3.f);
@@ -697,7 +711,7 @@ private:
         const float biteAmt = clampf (P.biteAmount + md[DstBite], 0.f, 1.f);
 
         // ---------- voice @ 2x ----------
-        for (int os = 0; os < 2; ++os)
+        for (int os = 0; os < osFactor; ++os)
         {
             const float op = std::sin (kTwoPi * (fmPhase + fmFb * (fmPrev1 + fmPrev2)));
             fmPrev2 = fmPrev1; fmPrev1 = op;
@@ -720,7 +734,9 @@ private:
             float y = ladder.output (P.slope, P.filterMode) * (1.f + k * 0.28f);
             if (P.bitePost) y = bite (y, biteAmt);
             lastFilterOut = y;
-            dec.push (y * dComp * 1.6f);
+            const float yo = y * dComp * 1.6f;
+            if (osFactor == 4) { decA.push (yo); if (os & 1) dec.push (decA.out()); }
+            else dec.push (yo);
         }
         float v = dec.out();
 
@@ -768,6 +784,9 @@ private:
             const float q = std::exp2 (15.f - P.crush * 12.f);
             v = v + (std::round (crushHold * q) / q - v) * std::min (1.f, P.crush * 2.f);
         }
+
+        // ---------- DC blocker (asymmetric drive/bite leave offset) ----------
+        { const float y = v - dcX + dcR * dcY; dcX = v; dcY = y; v = y; }
 
         // ---------- pan ----------
         const float pan = clampf (md[DstPan], -1.f, 1.f);
@@ -845,7 +864,7 @@ private:
             L += wl * 0.35f * P.reverbMix; R += wr * 0.35f * P.reverbMix;
         }
 
-        outL = softClip (L * outGain); outR = softClip (R * outGain);
+        outL = softClip (L * smGain); outR = softClip (R * smGain);
 
         if ((ctrlCounter & 63) == 0)
         {

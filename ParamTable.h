@@ -169,6 +169,7 @@ inline const std::vector<Desc>& paramTable()
             F ("rvSize", "Reverb Size", 0, 1, -1, &Params::reverbSize),
             F ("rvDamp", "Reverb Damp", 0, 1, -1, &Params::reverbDamp),
             F ("out", "Output", -24, 12, -1, &Params::outGainDb, "dB", true),
+            C ("quality", "Quality", { "Normal 2x", "High 4x" }, &Params::quality),
         };
 
         // LFOs

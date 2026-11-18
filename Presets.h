@@ -1,5 +1,6 @@
 // Factory presets — Zenon / prog / psytech / dark / hi-tech.
 #pragma once
+#include <utility>
 #include "SqueFMEngine.h"
 #include <string>
 #include <vector>
@@ -206,6 +207,13 @@ inline std::vector<Preset> factoryPresets()
         p.outGainDb = 3.f;
         v.push_back ({ "Hitech Clean Bass", p });
     }
+    // loudness match (~-14 dB RMS on a 16th roll), capped so peaks stay below the soft clipper
+    static const std::pair<const char*, float> kTrim[] = {
+        { "Init", 0.3f }, { "Zenon Swamp Roller", 0.1f }, { "Psytech Metal Ripper", -1.3f }, { "Hitech Laser Zaps", -1.0f },
+        { "Dark Forest Croak", 1.7f }, { "Prog Rubber Bass", 4.8f }, { "Spit Machine", -1.0f }, { "Sub-Audio Ripper", 3.7f },
+        { "Comb Insects", 7.4f }, { "Talking Frog", 0.5f }, { "Disco Valley Acid", -2.0f }, { "Night Full-On Gallop", 1.4f },
+        { "Hitech Clean Bass", 4.6f } };
+    for (auto& pr : v) for (const auto& t : kTrim) if (pr.name == t.first) pr.p.outGainDb += t.second;
     return v;
 }
 } // namespace sq

@@ -207,6 +207,16 @@ void SqueFMProcessor::setStateInformation (const void* data, int size)
         {
             auto tree = ValueTree::fromXml (*xml);
             currentProgram = (int) tree.getProperty ("program", 0);
+            // a project saved by an older version lacks newer parameters: give those their
+            // defaults instead of leaving whatever value the instance currently holds
+            for (const auto& d : sq::paramTable())
+                if (! tree.getChildWithProperty ("id", String (d.id)).isValid())
+                    if (auto* p = apvts.getParameter (d.id))
+                    {
+                        ValueTree c ("PARAM"); c.setProperty ("id", String (d.id), nullptr);
+                        c.setProperty ("value", p->convertFrom0to1 (p->getDefaultValue()), nullptr);
+                        tree.appendChild (c, nullptr);
+                    }
             apvts.replaceState (tree);
         }
 }
