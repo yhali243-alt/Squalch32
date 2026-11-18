@@ -1,6 +1,6 @@
 // Offline renderer: plays every factory preset through a psy groove and writes WAVs.
 // Build: g++ -O2 -std=c++17 -I../Source/dsp render_demo.cpp -o render_demo
-#include "SquelchEngine.h"
+#include "SqueFMEngine.h"
 #include "Presets.h"
 #include <cstdio>
 #include <string>
@@ -39,8 +39,9 @@ int main (int argc, char** argv)
     {
         sq::Engine e; e.prepare (sr); e.setParams (pr.p);
         std::vector<float> L ((size_t) total), R ((size_t) total);
-        const bool held = pr.name == "Mycelium Drift" || pr.name == "Swamp Talk" || pr.name == "Sludge Tentacle"
-                       || pr.name == "Fractal Bubbles" || pr.name == "Bog Walker" || pr.name == "Alien Frog" || pr.name == "Deep Mud";
+        const bool held = pr.name.find ("Swamp") != std::string::npos || pr.name.find ("Ripper") != std::string::npos
+                       || pr.name.find ("Croak") != std::string::npos || pr.name.find ("Spit") != std::string::npos
+                       || pr.name.find ("Insects") != std::string::npos || pr.name.find ("Frog") != std::string::npos;
         const int notesHeld[] = { 40, 40, 43, 38 };
         int curNote = -1; long long lastSixteenth = -1;
         double peak = 0, rms = 0; bool bad = false;
@@ -58,7 +59,7 @@ int main (int argc, char** argv)
                 {
                     if (six % 16 == 0)
                     {
-                        const int nn = notesHeld[(six / 16) % 4] + (pr.name == "Fractal Bubbles" || pr.name == "Spore Rain" ? 24 : 12);
+                        const int nn = notesHeld[(six / 16) % 4] + (pr.name.find ("Insects") != std::string::npos ? 24 : 12);
                         if (curNote >= 0) e.noteOff (curNote);
                         e.noteOn (nn, 0.9f); curNote = nn;
                     }
@@ -69,7 +70,7 @@ int main (int argc, char** argv)
                     const int sub = (int) (six % 4);
                     if (sub != 0)
                     {
-                        const int base = pr.name == "Spore Rain" ? 64 : (pr.name == "Squalch Rider" ? 52 : 40);
+                        const int base = pr.name.find ("Zaps") != std::string::npos ? 64 : (pr.name.find ("Acid") != std::string::npos ? 52 : 40);
                         const int nn = base + ((six % 32) == 31 ? 3 : 0);
                         e.noteOn (nn, sub == 2 ? 1.f : 0.75f); curNote = nn;
                     }

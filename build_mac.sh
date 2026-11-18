@@ -29,6 +29,8 @@ echo ">> Building SqueFM (a few minutes)..."
 "$CM" --build build --config Release --target SqueFM_VST3 -j"$(sysctl -n hw.ncpu)"
 DEST="$HOME/Library/Audio/Plug-Ins/VST3"
 mkdir -p "$DEST"
+# keep the previous working build until the new one is in place
+if [ -d "$DEST/SqueFM.vst3" ]; then rm -rf "$W/SqueFM.previous.vst3"; cp -R "$DEST/SqueFM.vst3" "$W/SqueFM.previous.vst3"; fi
 rm -rf "$DEST/SqueFM.vst3"
 cp -R build/SqueFM_artefacts/Release/VST3/SqueFM.vst3 "$DEST/"
 xattr -dr com.apple.quarantine "$DEST/SqueFM.vst3" 2>/dev/null || true
