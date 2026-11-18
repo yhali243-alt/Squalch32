@@ -1,0 +1,21 @@
+name: Build Squalch32
+on:
+  push:
+  workflow_dispatch:
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64"
+      - name: Build
+        run: cmake --build build --config Release --target Squalch32_VST3 --parallel 4
+      - name: Package
+        run: |
+          codesign --force --deep -s - build/Squalch32_artefacts/Release/VST3/Squalch32.vst3
+          ditto -c -k --keepParent build/Squalch32_artefacts/Release/VST3/Squalch32.vst3 Squalch32-VST3-mac.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Squalch32-macOS
+          path: Squalch32-VST3-mac.zip
