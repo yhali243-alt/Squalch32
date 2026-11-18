@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(Squalch32 VERSION 1.0.0)
+project(SqueFM VERSION 2.0.0)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 if(MSVC)
@@ -20,11 +20,11 @@ endif()
 
 set(SQ_FORMATS VST3 CACHE STRING "Plugin formats to build (e.g. 'VST3;Standalone')")
 
-juce_add_plugin(Squalch32
-  COMPANY_NAME "PsyLab"
-  PLUGIN_MANUFACTURER_CODE Psyl
-  PLUGIN_CODE Sq32
-  PRODUCT_NAME "Squalch32"
+juce_add_plugin(SqueFM
+  COMPANY_NAME "Disco Valley"
+  PLUGIN_MANUFACTURER_CODE Dval
+  PLUGIN_CODE Sqfm
+  PRODUCT_NAME "SqueFM"
   IS_SYNTH TRUE
   NEEDS_MIDI_INPUT TRUE
   NEEDS_MIDI_OUTPUT FALSE
@@ -34,16 +34,22 @@ juce_add_plugin(Squalch32
   VST3_CATEGORIES Instrument Synth
   FORMATS ${SQ_FORMATS})
 
-target_sources(Squalch32 PRIVATE PluginProcessor.cpp PluginEditor.cpp)
-target_compile_definitions(Squalch32 PUBLIC
+target_sources(SqueFM PRIVATE PluginProcessor.cpp PluginEditor.cpp)
+target_compile_definitions(SqueFM PUBLIC
   JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_VST3_CAN_REPLACE_VST2=0 JUCE_DISPLAY_SPLASH_SCREEN=0)
 
 set(SQ_LINK juce::juce_audio_processors juce::juce_gui_basics)
 if("Standalone" IN_LIST SQ_FORMATS)
   list(APPEND SQ_LINK juce::juce_audio_utils)
 endif()
-target_link_libraries(Squalch32
+target_link_libraries(SqueFM
   PRIVATE ${SQ_LINK}
   PUBLIC juce::juce_recommended_config_flags juce::juce_recommended_lto_flags juce::juce_recommended_warning_flags)
 
-add_executable(render_demo render_demo.cpp)
+option(SQ_BUILD_TESTS "Build the headless host test" OFF)
+if(SQ_BUILD_TESTS)
+  juce_add_console_app(SqueTest PRODUCT_NAME "SqueTest")
+  target_sources(SqueTest PRIVATE HostTest.cpp PluginProcessor.cpp PluginEditor.cpp)
+  target_compile_definitions(SqueTest PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
+  target_link_libraries(SqueTest PRIVATE juce::juce_audio_processors juce::juce_gui_basics juce::juce_recommended_config_flags)
+endif()

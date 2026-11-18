@@ -1,14 +1,14 @@
 #pragma once
 #include <juce_audio_processors/juce_audio_processors.h>
-#include "SquelchEngine.h"
+#include "SqueFMEngine.h"
 #include "ParamTable.h"
 #include "Presets.h"
 
-class Squalch32Processor : public juce::AudioProcessor
+class SqueFMProcessor : public juce::AudioProcessor
 {
 public:
-    Squalch32Processor();
-    ~Squalch32Processor() override = default;
+    SqueFMProcessor();
+    ~SqueFMProcessor() override = default;
 
     void prepareToPlay (double sampleRate, int samplesPerBlock) override;
     void releaseResources() override {}
@@ -19,7 +19,7 @@ public:
     juce::AudioProcessorEditor* createEditor() override;
     bool hasEditor() const override { return true; }
 
-    const juce::String getName() const override { return "Squalch32"; }
+    const juce::String getName() const override { return "SqueFM"; }
     bool acceptsMidi() const override  { return true; }
     bool producesMidi() const override { return false; }
     bool isMidiEffect() const override { return false; }
@@ -34,26 +34,25 @@ public:
     void getStateInformation (juce::MemoryBlock&) override;
     void setStateInformation (const void*, int) override;
 
-    // ---- used by the editor ----
     juce::AudioProcessorValueTreeState apvts;
     sq::Engine engine;
     std::vector<sq::Preset> presets;
     std::atomic<int> currentProgram { 0 };
+    std::atomic<float> hostBpm { 130.f };
 
     void applyPreset (const sq::Params&);
     void randomizeSteps();
     void mutateSteps();
     void clearSteps();
     void setParam (const juce::String& id, float plainValue);
+    float getParam (const juce::String& id) const;
 
 private:
     static juce::AudioProcessorValueTreeState::ParameterLayout createLayout();
-
     struct Bound { const sq::Desc* d; std::atomic<float>* v; };
     std::vector<Bound> bound;
-    std::array<std::atomic<float>*, sq::kMaxSteps> stRate {}, stShape {}, stDepth {}, stOff {};
     sq::Params params;
     juce::AudioBuffer<float> scratch;
 
-    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (Squalch32Processor)
+    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (SqueFMProcessor)
 };
