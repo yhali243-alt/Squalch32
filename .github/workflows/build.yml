@@ -1,21 +1,43 @@
-name: Build Squalch32
+name: Build SqueFM
 on:
   push:
   workflow_dispatch:
 jobs:
-  build:
-    runs-on: macos-15-intel
+  linux-check:
+    # compiles the real plugin target, runs the headless host test and renders the demo WAVs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Deps
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev libfreetype-dev libfontconfig1-dev libx11-dev libxext-dev libxrandr-dev libxinerama-dev libxcursor-dev libgl1-mesa-dev xvfb ffmpeg
+      - name: Configure
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DSQ_BUILD_TESTS=ON
+      - name: Build
+        run: cmake --build build --target SqueFM_VST3 SqueTest -j4
+      - name: Host test
+        run: mkdir -p gui && xvfb-run -a build/SqueTest_artefacts/Release/SqueTest gui
+      - name: Audio analysis + demos
+        run: |
+          g++ -O2 -std=c++17 analyze.cpp -o analyze && ./analyze
+          mkdir -p demos && g++ -O2 -std=c++17 render_demo.cpp -o render_demo && ./render_demo demos
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SqueFM-demos
+          path: demos
+  mac:
+    runs-on: macos-15
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       - name: Configure
         run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64"
       - name: Build
-        run: cmake --build build --config Release --target Squalch32_VST3 --parallel 4
+        run: cmake --build build --config Release --target SqueFM_VST3 --parallel 4
       - name: Package
         run: |
-          codesign --force --deep -s - build/Squalch32_artefacts/Release/VST3/Squalch32.vst3
-          ditto -c -k --keepParent build/Squalch32_artefacts/Release/VST3/Squalch32.vst3 Squalch32-VST3-mac.zip
+          codesign --force --deep -s - build/SqueFM_artefacts/Release/VST3/SqueFM.vst3
+          ditto -c -k --keepParent build/SqueFM_artefacts/Release/VST3/SqueFM.vst3 SqueFM-VST3-mac.zip
       - uses: actions/upload-artifact@v4
         with:
-          name: Squalch32-macOS
-          path: Squalch32-VST3-mac.zip
+          name: SqueFM-macOS
+          path: SqueFM-VST3-mac.zip
