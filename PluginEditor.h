@@ -177,6 +177,25 @@ private:
     juce::RangedAudioParameter* depthParam (int lane) const;
     void setAt (juce::Point<float>, bool reset = false);
 };
+// v5: one polyrhythmic lane (0 trigger, 1 pitch, 2 modulation)
+class PolyLaneView : public juce::Component
+{
+public:
+    PolyLaneView (SqueFMProcessor& p, int laneIndex) : proc (p), lane (laneIndex) {}
+    void paint (juce::Graphics&) override;
+    void mouseDown (const juce::MouseEvent&) override;
+    void mouseDrag (const juce::MouseEvent&) override;
+    void mouseUp (const juce::MouseEvent&) override;
+    void mouseDoubleClick (const juce::MouseEvent&) override;
+private:
+    SqueFMProcessor& proc; int lane; int dragStep = -1; bool dragToggled = false; bool toggleTo = true;
+    std::vector<juce::RangedAudioParameter*> touched;
+    juce::Rectangle<float> cells() const { return getLocalBounds().toFloat().reduced (4.f).withTrimmedTop (18.f); }
+    int stepAt (float x) const;
+    juce::RangedAudioParameter* prm (const juce::String& id) const;
+    void setP (juce::RangedAudioParameter*, float plain);
+    void edit (const juce::MouseEvent&, bool first);
+};
 } // namespace ui
 
 // =================================================================== EDITOR
@@ -190,7 +209,7 @@ public:
     static constexpr int W = 1280, H = 860;
 
 private:
-    enum Page { Synth, Seq, Mod, Fx, Always, Main, Fm };
+    enum Page { Synth, Seq, Mod, Fx, Always, Main, Fm, Poly };
     struct Panel
     {
         juce::String title; juce::Rectangle<int> r; int cols; juce::Colour accent; Page page;
@@ -231,7 +250,9 @@ private:
     juce::ComboBox presetBox;
     juce::TextButton prevBtn { "<" }, nextBtn { ">" };
     juce::TextButton randBtn { "RANDOM" }, mutateBtn { "MUTATE" }, clearBtn { "CLEAR" };
-    std::array<juce::TextButton, 6> tabs;
+    std::array<juce::TextButton, 7> tabs;
+    std::array<std::unique_ptr<ui::PolyLaneView>, 3> polyViews;
+    juce::TextButton polyClearBtn { "CLEAR POLY" };
     ui::FilterLfoView flView { proc };
     ui::FmAlgoView algoView { proc };
     ui::LaneEditor laneEditor { proc };

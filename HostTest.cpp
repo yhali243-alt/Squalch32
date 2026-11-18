@@ -66,8 +66,8 @@ int main (int argc, char** argv)
 
     std::unique_ptr<juce::AudioProcessorEditor> ed (proc->createEditor());
     ed->setSize (SqueFMEditor::W, SqueFMEditor::H);
-    const char* tabNames[] = { "MAIN", "FM", "SYNTH", "SEQUENCER", "MOD", "FX" };
-    for (int t = 0; t < 6; ++t)
+    const char* tabNames[] = { "MAIN", "FM", "SYNTH", "SEQUENCER", "POLY", "MOD", "FX" };
+    for (int t = 0; t < 7; ++t)
     {
         // click the tab button by name
         std::function<juce::Button*(juce::Component*)> findBtn = [&] (juce::Component* c) -> juce::Button* {

@@ -1,3 +1,4 @@
+#include <numeric>
 #include "PluginEditor.h"
 #include <complex>
 
@@ -813,6 +814,111 @@ void LaneEditor::mouseUp (const MouseEvent&) { for (auto* p : touched) p->endCha
 void LaneEditor::mouseDoubleClick (const MouseEvent& e) { if (bars.contains (e.position)) { setAt (e.position, true); mouseUp (e); } }
 } // namespace ui
 
+
+// =============================================================== v5 poly lanes ===
+namespace ui
+{
+RangedAudioParameter* PolyLaneView::prm (const String& id) const { return dynamic_cast<RangedAudioParameter*> (proc.apvts.getParameter (id)); }
+void PolyLaneView::setP (RangedAudioParameter* p, float plain)
+{
+    if (! p) return;
+    if (std::find (touched.begin(), touched.end(), p) == touched.end()) { p->beginChangeGesture(); touched.push_back (p); }
+    p->setValueNotifyingHost (p->convertTo0to1 (plain));
+}
+int PolyLaneView::stepAt (float x) const { auto c = cells(); return jlimit (0, sq::kMaxSteps - 1, (int) ((x - c.getX()) / (c.getWidth() / sq::kMaxSteps))); }
+
+void PolyLaneView::paint (Graphics& g)
+{
+    static const char* tags[] = { "T", "P", "M" };
+    auto r = getLocalBounds().toFloat();
+    g.setColour (Colour (0xff0b0716)); g.fillRoundedRectangle (r, 8.f);
+    const int n = jlimit (1, 32, (int) proc.getParam (String ("ps") + tags[lane] + "Steps"));
+    const int div = (int) proc.getParam (String ("ps") + tags[lane] + "Div");
+    const bool running = proc.engine.psRunning();
+    const int cur = proc.engine.uiPsStep[(size_t) lane].load (std::memory_order_relaxed);
+    const Colour accent = lane == 0 ? col::pink : (lane == 1 ? col::cyan : col::lime);
+    g.setFont (font (11.f, true)); g.setColour (accent);
+    String head = String (n) + " steps  @ " + sq::kRateNames[jlimit (0, sq::kNumRates - 1, div)] + "   = " + String (n * sq::kRateBeats[jlimit (0, sq::kNumRates - 1, div)], 3) + " beats per cycle";
+    if (lane == 1 && running) { const int note = proc.engine.uiPsNote.load(); if (note >= 0) head << "     now playing: " << sq::kNoteNames[note % 12] << String (note / 12 - 1); }
+    if (lane == 0)
+    {
+        // all three lanes line up again after the least common multiple of their cycle lengths (in 1/48 beat units)
+        long long l = 1;
+        for (int k = 0; k < 3; ++k)
+        {
+            const int nn = jlimit (1, 32, (int) proc.getParam (String ("ps") + tags[k] + "Steps"));
+            const int dd = jlimit (0, sq::kNumRates - 1, (int) proc.getParam (String ("ps") + tags[k] + "Div"));
+            const long long u = std::llround (nn * sq::kRateBeats[dd] * 48.0);
+            l = l / std::gcd (l, u) * u;
+        }
+        head << "     all 3 lanes realign every " << String ((double) l / 48.0 / 4.0, 2) << " bars";
+    }
+    g.drawText (head, r.removeFromTop (18.f).reduced (8.f, 0.f), Justification::centredLeft);
+    auto c = cells(); const float cw = c.getWidth() / sq::kMaxSteps;
+    const int root = proc.getParam ("psFollow") > 0.5f ? 4 : (int) proc.getParam ("psRoot");
+    const int scale = (int) proc.getParam ("psScale");
+    for (int i = 0; i < sq::kMaxSteps; ++i)
+    {
+        const String s = String (i + 1);
+        auto cell = Rectangle<float> (c.getX() + cw * i + 1.f, c.getY(), cw - 2.f, c.getHeight());
+        const bool act = i < n;
+        g.setColour (act ? Colour (0xff1b1230) : Colour (0xff0e0a18)); g.fillRoundedRectangle (cell, 3.f);
+        const Colour on = (running && i == cur ? col::gold : accent).withAlpha (act ? 0.9f : 0.18f);
+        if (lane == 0)
+        {
+            const bool st = proc.getParam ("pt" + s + "on") > 0.5f;
+            const float pb = proc.getParam ("pt" + s + "pb"), ac = proc.getParam ("pt" + s + "ac");
+            if (st)
+            {
+                g.setColour (on); g.fillRoundedRectangle (cell.withTop (cell.getBottom() - cell.getHeight() * (0.25f + 0.75f * pb)).reduced (2.f, 0.f), 3.f);
+                if (ac > 0.01f) { g.setColour (Colours::white.withAlpha (ac * (act ? 1.f : 0.3f))); g.fillEllipse (cell.getCentreX() - 4.f, cell.getY() + 5.f, 8.f, 8.f); }
+            }
+            else { g.setColour (accent.withAlpha (0.25f)); g.drawRoundedRectangle (cell.reduced (3.f), 3.f, 1.f); }
+        }
+        else if (lane == 1)
+        {
+            const int d = (int) proc.getParam ("pp" + s + "deg");
+            const float mid = cell.getCentreY(), y = mid - (float) d / 14.f * (cell.getHeight() * 0.46f);
+            g.setColour (on); g.fillRect (Rectangle<float>::leftTopRightBottom (cell.getX() + 2.f, jmin (y, mid) - 1.f, cell.getRight() - 2.f, jmax (y, mid) + 1.f));
+            g.setFont (font (9.5f, true)); g.setColour (act ? col::text : col::dim.withAlpha (0.4f));
+            const int pc = sq::degreeToMidi (60 + root, scale, d) % 12;
+            g.drawText (sq::kNoteNames[pc], cell.withHeight (14.f).withY (cell.getBottom() - 15.f), Justification::centred);
+        }
+        else
+        {
+            const float v = proc.getParam ("pm" + s + "v");
+            g.setColour (on); g.fillRoundedRectangle (cell.withTop (cell.getBottom() - v * cell.getHeight()).reduced (2.f, 0.f), 3.f);
+        }
+    }
+    if (lane == 1) { g.setColour (col::dim.withAlpha (0.35f)); g.drawHorizontalLine ((int) c.getCentreY(), c.getX(), c.getRight()); }
+}
+
+void PolyLaneView::edit (const MouseEvent& e, bool first)
+{
+    auto c = cells(); const int i = stepAt (e.position.x); const String s = String (i + 1);
+    const float v = jlimit (0.f, 1.f, (c.getBottom() - e.position.y) / c.getHeight());
+    if (lane == 0)
+    {
+        if (e.mods.isShiftDown()) { setP (prm ("pt" + s + "ac"), v); return; }
+        if (e.mods.isAltDown()) { setP (prm ("pt" + s + "pb"), v); return; }
+        if (first || i != dragStep) { if (first) toggleTo = proc.getParam ("pt" + s + "on") < 0.5f; setP (prm ("pt" + s + "on"), toggleTo ? 1.f : 0.f); }
+    }
+    else if (lane == 1) setP (prm ("pp" + s + "deg"), (float) jlimit (-14, 14, (int) std::lround ((v - 0.5f) * 2.f * 14.f / 0.92f)));
+    else setP (prm ("pm" + s + "v"), v);
+    dragStep = i;
+}
+void PolyLaneView::mouseDown (const MouseEvent& e) { dragStep = -1; edit (e, true); repaint(); }
+void PolyLaneView::mouseDrag (const MouseEvent& e) { edit (e, false); repaint(); }
+void PolyLaneView::mouseUp (const MouseEvent&) { for (auto* p : touched) p->endChangeGesture(); touched.clear(); }
+void PolyLaneView::mouseDoubleClick (const MouseEvent& e)
+{
+    const String s = String (stepAt (e.position.x) + 1);
+    if (lane == 0) { setP (prm ("pt" + s + "pb"), 1.f); setP (prm ("pt" + s + "ac"), 0.f); }
+    else if (lane == 1) setP (prm ("pp" + s + "deg"), 0.f); else setP (prm ("pm" + s + "v"), 0.5f);
+    mouseUp (e); repaint();
+}
+} // namespace ui
+
 SqueFMEditor::SqueFMEditor (SqueFMProcessor& p)
     : AudioProcessorEditor (p), proc (p), grid (p), filterDisplay (p), scope (p)
 {
@@ -908,13 +1014,42 @@ SqueFMEditor::SqueFMEditor (SqueFMProcessor& p)
                     { id ("a"), "ATTACK" }, { id ("d"), "DECAY" }, { id ("r"), "RELEASE" } });
     }
 
+    // ---------------- POLY page (v5) ----------------
+    addPanel ("POLY SEQUENCER  (hold one MIDI note)", { 10, yM, 250, 300 }, 2, col::gold, Poly,
+              { { "psOn", "POLY ON" }, { "psFollow", "ROOT = MIDI" }, { "psRoot", "ROOT" }, { "psScale", "SCALE" }, { "psOct", "OCTAVE" }, { "psGate", "GATE" } });
+    addPanel ("MOD LANE TARGET", { 10, 380, 250, 320 }, 3, col::lime, Poly, { { "psModDest", "DESTINATION" }, { "psModDepth", "DEPTH" }, { "psModSmooth", "SMOOTH" } });
+    {
+        static const char* laneTitle[3] = { "TRIGGER LANE   click = on/off   alt-drag = probability   shift-drag = accent", "PITCH LANE   scale degrees (drag up/down)", "MODULATION LANE   value per step" };
+        static const char* tg[3] = { "psT", "psP", "psM" };
+        for (int l = 0; l < 3; ++l)
+        {
+            polyViews[(size_t) l] = std::make_unique<ui::PolyLaneView> (proc, l);
+            const std::string t = tg[l];
+            auto& lp = addPanel (laneTitle[l], { 268, yM + l * 212, 1002, 204 }, 2, l == 0 ? col::pink : (l == 1 ? col::cyan : col::lime), Poly,
+                                 { { strdup ((t + "Steps").c_str()), "STEPS" }, { strdup ((t + "Div").c_str()), "RATE" },
+                                   { strdup ((t + "Dir").c_str()), "DIRECTION" }, { strdup ((t + "Phase").c_str()), "PHASE" } });
+            lp.leftWidth = 230; lp.extra = polyViews[(size_t) l].get();
+        }
+    }
+
     // ---------------- always visible footer ----------------
     addPanel ("MACROS", { 10, 708, 560, 142 }, 4, col::gold, Always, { { "m1", "MACRO 1" }, { "m2", "MACRO 2" }, { "m3", "MACRO 3" }, { "m4", "MACRO 4" } });
     addPanel ("MASTER", { 578, 708, 340, 142 }, 4, col::pink, Always, { { "out", "OUTPUT" }, { "glide", "GLIDE" }, { "legato", "LEGATO" }, { "bend", "BEND" } });
     { auto& sp = addPanel ("LIVE", { 926, 708, 344, 142 }, 1, col::pink, Always, {}); sp.extra = &scope; }
 
     content.addAndMakeVisible (grid); content.addAndMakeVisible (filterDisplay); content.addAndMakeVisible (scope);
-    for (auto* c : std::initializer_list<Component*> { &flView, &algoView, &laneEditor, &familyBox, &familyBox2 }) content.addAndMakeVisible (c);
+    for (auto* c : std::initializer_list<Component*> { &flView, &algoView, &laneEditor, &familyBox, &familyBox2, &polyClearBtn }) content.addAndMakeVisible (c);
+    for (auto& pv : polyViews) content.addAndMakeVisible (*pv);
+    polyClearBtn.setTooltip ("Reset all poly steps: triggers on, probability 1, no accent, degree 0, mod 0.5");
+    polyClearBtn.onClick = [this]
+    {
+        for (int i = 1; i <= sq::kMaxSteps; ++i)
+        {
+            const String s (i);
+            proc.setParam ("pt" + s + "on", 1.f); proc.setParam ("pt" + s + "pb", 1.f); proc.setParam ("pt" + s + "ac", 0.f);
+            proc.setParam ("pp" + s + "deg", 0.f); proc.setParam ("pm" + s + "v", 0.5f);
+        }
+    };
     for (auto* fb : { &familyBox, &familyBox2 })
     {
         fb->setTextWhenNothingSelected ("FM SOUND: choose a family...");
@@ -941,9 +1076,9 @@ SqueFMEditor::SqueFMEditor (SqueFMProcessor& p)
     clearBtn.onClick = [this] { proc.clearSteps(); };
     for (auto* b : { &randBtn, &mutateBtn, &clearBtn }) content.addAndMakeVisible (*b);
 
-    const char* tabNames[] = { "MAIN", "FM", "SYNTH", "SEQUENCER", "MOD", "FX" };
-    static const Page tabPages[] = { Main, Fm, Synth, Seq, Mod, Fx };
-    for (int i = 0; i < 6; ++i)
+    const char* tabNames[] = { "MAIN", "FM", "SYNTH", "SEQUENCER", "POLY", "MOD", "FX" };
+    static const Page tabPages[] = { Main, Fm, Synth, Seq, Poly, Mod, Fx };
+    for (int i = 0; i < 7; ++i)
     {
         tabs[(size_t) i].setButtonText (tabNames[i]);
         tabs[(size_t) i].onClick = [this, i] { showPage (tabPages[i]); };
@@ -995,6 +1130,7 @@ void SqueFMEditor::layoutPanels()
             else p.extra->setBounds (area);
             continue;
         }
+        if (p.leftWidth > 0 && p.extra != nullptr) { p.extra->setBounds (area.withTrimmedLeft (p.leftWidth + 8)); area = area.withWidth (p.leftWidth); }
         if (p.topExtra > 0 && p.extra != nullptr) { p.extra->setBounds (area.removeFromTop (p.topExtra - 8)); area.removeFromTop (8); }
         const int n = (int) p.items.size();
         if (n == 0) continue;
@@ -1009,10 +1145,11 @@ void SqueFMEditor::layoutPanels()
     for (int i = 0; i < sq::kMatrixSlots; ++i)
         matrixRows[(size_t) i]->setBounds (matrixArea.getX(), matrixArea.getY() + i * rowH, matrixArea.getWidth(), rowH);
 
-    prevBtn.setBounds (378, 18, 28, 30);
-    presetBox.setBounds (410, 18, 266, 30);
-    nextBtn.setBounds (680, 18, 28, 30);
-    for (int i = 0; i < 6; ++i) tabs[(size_t) i].setBounds (W - 10 - (6 - i) * 92, 18, 88, 32);
+    prevBtn.setBounds (370, 18, 28, 30);
+    presetBox.setBounds (402, 18, 220, 30);
+    nextBtn.setBounds (626, 18, 28, 30);
+    for (int i = 0; i < 7; ++i) tabs[(size_t) i].setBounds (W - 10 - (7 - i) * 86, 18, 82, 32);
+    polyClearBtn.setBounds (24, 640, 222, 30);
     // sequencer tools sit in the grid panel's title bar
     randBtn.setBounds (1270 - 3 * 92 - 10, 72 + 4, 86, 22);
     mutateBtn.setBounds (1270 - 2 * 92 - 10, 72 + 4, 86, 22);
@@ -1022,8 +1159,8 @@ void SqueFMEditor::layoutPanels()
 void SqueFMEditor::showPage (Page pg)
 {
     page = pg;
-    static const Page tabPages[] = { Main, Fm, Synth, Seq, Mod, Fx };
-    for (int i = 0; i < 6; ++i) tabs[(size_t) i].setToggleState (tabPages[i] == pg, dontSendNotification);
+    static const Page tabPages[] = { Main, Fm, Synth, Seq, Poly, Mod, Fx };
+    for (int i = 0; i < 7; ++i) tabs[(size_t) i].setToggleState (tabPages[i] == pg, dontSendNotification);
     for (auto& p : panels)
     {
         const bool vis = p.page == pg || p.page == Always;
@@ -1032,6 +1169,7 @@ void SqueFMEditor::showPage (Page pg)
     }
     for (auto& r : matrixRows) r->setVisible (pg == Mod);
     laneEditor.setVisible (pg == Seq);
+    polyClearBtn.setVisible (pg == Poly);
     for (auto* b : { &randBtn, &mutateBtn, &clearBtn }) b->setVisible (pg == Seq);
     content.repaint();
 }
@@ -1147,6 +1285,7 @@ void SqueFMEditor::timerCallback()
     flView.push();
     if (page == Main) flView.repaint();
     if (page == Fm) algoView.repaint();
+    if (page == Poly) for (auto& pv : polyViews) pv->repaint();
     if (page == Seq) { grid.repaint(); laneEditor.repaint(); }
     if (page == Synth) filterDisplay.repaint();
     if (page == Mod) { for (auto& v : lfoViews) v->repaint(); for (auto& r : matrixRows) r->repaint(); }
