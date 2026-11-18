@@ -305,6 +305,41 @@ inline std::vector<Preset> factoryPresets()
         mod (p, 0, SrcMacro1, DstFmIndex, 0.6f); mod (p, 1, SrcMacro2, DstCutoff, 0.5f);
         v.push_back ({ "D Psy FM Lead", p });
     }
+
+    // ================= v5 polyrhythmic sequencer demos (hold one MIDI note) =================
+    auto polyBase = [] (Params& p, std::initializer_list<int> deg, std::initializer_list<float> acc, std::initializer_list<int> on)
+    {
+        p.psOn = true; p.psFollow = true; p.seqOn = false;
+        int i = 0; for (int d : deg) p.psDeg[(size_t) i++] = d;
+        i = 0; for (float a : acc) p.psAcc[(size_t) i++] = a;
+        i = 0; for (int o : on) p.psOnStep[(size_t) i++] = o != 0;
+    };
+    { // 5-step trigger (1/16) against 7-step pitch (1/8): the accent pattern and the melody drift apart and realign every 35 sixteenths
+        Params p; for (auto& x : v) if (x.name == "B Aggressive Swamp") p = x.p;
+        polyBase (p, { 0, 0, 3, 0, -2, 1, 0 }, { 1.f, 0, .45f, 0, 0 }, { 1, 1, 1, 1, 1 });
+        p.psLane[0] = { 5, L16, 0, 0.f }; p.psLane[1] = { 7, L8, 0, 0.f }; p.psLane[2] = { 3, 6, 0, 0.f };
+        p.psScale = 3; p.psGate = 0.6f; p.psModDest = 3; p.psModDepth = 0.35f; p.psModV[0] = .9f; p.psModV[1] = .2f; p.psModV[2] = .5f;
+        p.aR = 0.08f; p.glide = 0.02f;
+        v.push_back ({ "Poly 5v7 Hypnotic", p });
+    }
+    { // three lanes: trigger 5 (1/16, one rest), pitch 7 (1/8), FM character 3 (1/8T)
+        Params p; for (auto& x : v) if (x.name == "C HiTech FM Creature") p = x.p;
+        polyBase (p, { 0, 4, 1, 0, 6, 2, -3 }, { 1.f, 0, 0, .6f, 0 }, { 1, 1, 0, 1, 1 });
+        p.psLane[0] = { 5, L16, 0, 0.f }; p.psLane[1] = { 7, L8, 0, 0.f }; p.psLane[2] = { 3, 6, 0, 0.f };
+        p.psScale = 1; p.psOct = 1; p.psGate = 0.5f; p.psModDest = 1; p.psModDepth = 0.9f; p.psModSmooth = 0.15f;
+        p.psModV[0] = .05f; p.psModV[1] = .95f; p.psModV[2] = .45f;
+        p.aS = 0.f; p.aD = 0.25f; p.outGainDb += 3.5f;
+        v.push_back ({ "Poly 5-7-3 Evolving", p });
+    }
+    { // F Hungarian Minor: root fixed to F, 8-step syncopated trigger vs 11-step motif, 3-step FM brightness
+        Params p; for (auto& x : v) if (x.name == "D Psy FM Lead") p = x.p;
+        polyBase (p, { 0, 3, 1, 4, 0, -1, 2, 5, 1, 0, 6 }, { 1.f, 0, 0, .7f, 0, 0, .5f, 0 }, { 1, 0, 1, 1, 0, 1, 0, 1 });
+        p.psFollow = false; p.psRoot = 5; p.psOct = 0; p.psScale = 0;
+        p.psLane[0] = { 8, L16, 0, 0.f }; p.psLane[1] = { 11, L16, 0, 0.f }; p.psLane[2] = { 3, L8, 0, 0.f };
+        p.psGate = 0.8f; p.psModDest = 0; p.psModDepth = 0.6f; p.psModV[0] = .2f; p.psModV[1] = .8f; p.psModV[2] = .5f;
+        p.lnFm = 0.f; p.lnChar = 0.f; p.accAmt = 0.5f; p.outGainDb -= 2.5f;
+        v.push_back ({ "Poly F Hungarian 136", p });
+    }
     return v;
 }
 } // namespace sq

@@ -308,6 +308,48 @@ inline const std::vector<Desc>& paramTable()
                 stF ("ac", "Accent", &StepParams::acc);
             }
         }
+        // ===================== v5 POLY SEQUENCER parameters (appended; never reorder) =====================
+        {
+            v.push_back (B ("psOn", "Poly Seq On", &Params::psOn));
+            v.push_back (B ("psFollow", "Poly Root From MIDI", &Params::psFollow));
+            v.push_back (C ("psRoot", "Poly Root", names (kNoteNames, 12), &Params::psRoot));
+            v.push_back (C ("psScale", "Poly Scale", names (kScaleNames, kNumScales), &Params::psScale));
+            v.push_back (I ("psOct", "Poly Octave", -3, 3, &Params::psOct));
+            v.push_back (F ("psGate", "Poly Gate", 0.02f, 1, -1, &Params::psGate));
+            v.push_back (C ("psModDest", "Poly Mod Destination", names (kPsModDestNames, kNumPsModDests), &Params::psModDest));
+            v.push_back (F ("psModDepth", "Poly Mod Depth", -1, 1, -1, &Params::psModDepth, "", true));
+            v.push_back (F ("psModSmooth", "Poly Mod Smooth", 0, 1, -1, &Params::psModSmooth));
+            static const char* laneTag[3] = { "T", "P", "M" };
+            static const char* laneName[3] = { "Trigger", "Pitch", "Mod" };
+            for (int l = 0; l < 3; ++l)
+            {
+                const std::string pre = std::string ("ps") + laneTag[l], nm = std::string ("Poly ") + laneName[l] + " ";
+                Desc d;
+                d = {}; d.id = pre + "Steps"; d.name = nm + "Steps"; d.kind = Desc::Int; d.min = 1; d.max = 32;
+                d.get = [l] (const Params& p) { return (float) p.psLane[(size_t) l].steps; }; d.set = [l] (Params& p, float x) { p.psLane[(size_t) l].steps = (int) std::lround (x); }; v.push_back (d);
+                d = {}; d.id = pre + "Div"; d.name = nm + "Rate"; d.kind = Desc::Choice; d.choices = names (kRateNames, kNumRates); d.max = kNumRates - 1;
+                d.get = [l] (const Params& p) { return (float) p.psLane[(size_t) l].div; }; d.set = [l] (Params& p, float x) { p.psLane[(size_t) l].div = (int) std::lround (x); }; v.push_back (d);
+                d = {}; d.id = pre + "Dir"; d.name = nm + "Direction"; d.kind = Desc::Choice; d.choices = names (kLaneDirNames, 3); d.max = 2;
+                d.get = [l] (const Params& p) { return (float) p.psLane[(size_t) l].dir; }; d.set = [l] (Params& p, float x) { p.psLane[(size_t) l].dir = (int) std::lround (x); }; v.push_back (d);
+                d = {}; d.id = pre + "Phase"; d.name = nm + "Phase"; d.kind = Desc::Float; d.min = -16; d.max = 16; d.unit = "st"; d.bipolar = true;
+                d.get = [l] (const Params& p) { return p.psLane[(size_t) l].phase; }; d.set = [l] (Params& p, float x) { p.psLane[(size_t) l].phase = x; }; v.push_back (d);
+            }
+            for (int i = 0; i < kMaxSteps; ++i)
+            {
+                const std::string n = std::to_string (i + 1);
+                Desc d;
+                d = {}; d.id = "pt" + n + "on"; d.name = "Poly Trig " + n + " On"; d.kind = Desc::Bool;
+                d.get = [i] (const Params& p) { return p.psOnStep[(size_t) i] ? 1.f : 0.f; }; d.set = [i] (Params& p, float x) { p.psOnStep[(size_t) i] = x > 0.5f; }; v.push_back (d);
+                d = {}; d.id = "pt" + n + "pb"; d.name = "Poly Trig " + n + " Probability"; d.kind = Desc::Float; d.min = 0; d.max = 1;
+                d.get = [i] (const Params& p) { return p.psProb[(size_t) i]; }; d.set = [i] (Params& p, float x) { p.psProb[(size_t) i] = x; }; v.push_back (d);
+                d = {}; d.id = "pt" + n + "ac"; d.name = "Poly Trig " + n + " Accent"; d.kind = Desc::Float; d.min = 0; d.max = 1;
+                d.get = [i] (const Params& p) { return p.psAcc[(size_t) i]; }; d.set = [i] (Params& p, float x) { p.psAcc[(size_t) i] = x; }; v.push_back (d);
+                d = {}; d.id = "pp" + n + "deg"; d.name = "Poly Pitch " + n + " Degree"; d.kind = Desc::Int; d.min = -14; d.max = 14;
+                d.get = [i] (const Params& p) { return (float) p.psDeg[(size_t) i]; }; d.set = [i] (Params& p, float x) { p.psDeg[(size_t) i] = (int) std::lround (x); }; v.push_back (d);
+                d = {}; d.id = "pm" + n + "v"; d.name = "Poly Mod " + n + " Value"; d.kind = Desc::Float; d.min = 0; d.max = 1;
+                d.get = [i] (const Params& p) { return p.psModV[(size_t) i]; }; d.set = [i] (Params& p, float x) { p.psModV[(size_t) i] = x; }; v.push_back (d);
+            }
+        }
         const Params defaults;
         for (auto& d : v) d.def = d.get (defaults);
         return v;

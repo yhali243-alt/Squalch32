@@ -30,6 +30,7 @@
 #include <cstring>
 #include <vector>
 #include <algorithm>
+#include "PolySeq.h"
 
 namespace sq
 {
@@ -201,6 +202,18 @@ struct Params
     std::array<FmOpParams, 4> op {};
     // sequencer lanes
     float lnFm = 0.f, lnChar = 0.f, lnRes = 0.f, lnDrive = 0.f, accAmt = 0.5f;
+
+    // ===== v5: POLYRHYTHMIC SEQUENCER (off by default) =====
+    struct PolyLane { int steps = 16, div = 4, dir = 0; float phase = 0.f; };   // div indexes kRateBeats
+    bool  psOn = false, psFollow = true;
+    int   psRoot = 4, psScale = 0, psOct = 0;              // root used when not following MIDI (E), octave shift
+    std::array<PolyLane, 3> psLane { PolyLane { 5, 4, 0, 0.f }, PolyLane { 7, 7, 0, 0.f }, PolyLane { 3, 6, 0, 0.f } };  // trigger, pitch, mod
+    float psGate = 0.5f;                                   // fraction of a trigger step
+    int   psModDest = 1; float psModDepth = 0.f, psModSmooth = 0.2f;
+    std::array<bool, kMaxSteps>  psOnStep {};             // trigger lane
+    std::array<float, kMaxSteps> psProb {}, psAcc {}, psModV {};
+    std::array<int, kMaxSteps>   psDeg {};
+    Params() { psOnStep.fill (true); psProb.fill (1.f); psAcc.fill (0.f); psModV.fill (0.5f); psDeg.fill (0); }
 };
 
 // ------------------------------------------------------------------ util -----
@@ -395,6 +408,9 @@ public:
     std::atomic<int>   uiStep { 0 };
     std::atomic<float> uiStepFrac { 0.f }, uiSeqValue { 0.f }, uiCutoffHz { 600.f }, uiEnv { 0.f }, uiFilterLfo { 0.f }, uiFmIndex { 0.f };
     std::array<std::atomic<float>, 4> uiOpEnv {};
+    std::array<std::atomic<int>, 3> uiPsStep {};
+    std::atomic<int> uiPsNote { -1 };
+    std::atomic<float> uiPsMod { 0.5f };
     std::array<std::atomic<float>, NumSrc> uiSrc {};
     std::array<std::atomic<float>, kMatrixSlots> uiSlot {};
     static constexpr int kScopeSize = 256;
@@ -430,7 +446,13 @@ public:
     }
 
     void setParams (const Params& p) { P = p; }
-    void setTransport (double bpmIn, double ppqIn, bool playingIn) { bpm = bpmIn > 1.0 ? bpmIn : 120.0; ppq = ppqIn; playing = playingIn; }
+    void setTransport (double bpmIn, double ppqIn, bool playingIn)
+    {
+        bpm = bpmIn > 1.0 ? bpmIn : 120.0; ppq = ppqIn;
+        if (playingIn && ! playing && psActive) { psStart = ppqIn; psFirst = true; psRng.s = 0x2545F491u; }   // transport start re-aligns the poly sequence
+        playing = playingIn;
+        if (playing) psFree = ppq;
+    }
     void pitchBend (float v) { bend = clampf (v, -1.f, 1.f); }
     void modWheel  (float v) { modWheelVal = clampf (v, 0.f, 1.f); }
 
@@ -439,6 +461,18 @@ public:
         removeHeld (note);
         if (heldCount < 128) held[heldCount++] = note;
         const bool wasHeld = heldCount > 1;
+        if (P.psOn)
+        {
+            // MIDI gate mode: the held note is the root reference; the sequencer plays the voice
+            psHeldRoot = note; psVel = vel;
+            if (! wasHeld || ! psActive) psStartSeq();
+            return;
+        }
+        triggerVoice (note, vel, wasHeld);
+    }
+
+    void triggerVoice (int note, float vel, bool wasHeld)
+    {
         targetNote = (float) note;
         velocity = vel;
         if (! wasHeld || ! P.legato)
@@ -460,16 +494,92 @@ public:
     void noteOff (int note)
     {
         removeHeld (note);
+        if (P.psOn || psActive)
+        {
+            if (heldCount > 0) psHeldRoot = held[heldCount - 1];
+            else psStopSeq();
+            return;
+        }
         if (heldCount > 0) { targetNote = (float) held[heldCount - 1]; if (! P.legato) { fEnv.gateOn(); aEnv.gateOn(); mEnv.gateOn(); for (auto& e : opEnv) e.gateOn(); } }
         else { fEnv.gateOff(); aEnv.gateOff(); mEnv.gateOff(); for (auto& e : opEnv) e.gateOff(); }
     }
-    void allNotesOff() { heldCount = 0; fEnv.gateOff(); aEnv.gateOff(); mEnv.gateOff(); for (auto& e : opEnv) e.gateOff(); }
+    void allNotesOff() { heldCount = 0; psActive = false; psNote = -1; psGateEnd = -1.0; fEnv.gateOff(); aEnv.gateOff(); mEnv.gateOff(); for (auto& e : opEnv) e.gateOff(); }
+
+    // ---------------- v5 poly sequencer ----------------
+    float psVel = 1.f;
+    long long psEvents = 0;   // count of internal note events (tests / UI)
+    bool  psRunning() const { return psActive; }
+    int   psCurrentNote() const { return psNote; }
+    double psBeatNow() const { return psFree; }
+    float psAccV = 0.f, psAccCoef = 0.999f;
+    void psStartSeq()
+    {
+        psActive = true; psFirst = true; psStart = psBeatNow(); psGateEnd = -1.0;
+        psRng.s = 0x2545F491u;                       // deterministic: same pattern every time the sequence starts
+        psModY = P.psModV[0];
+    }
+    void psStopSeq()
+    {
+        psActive = false; psGateEnd = -1.0; psNote = -1;
+        fEnv.gateOff(); aEnv.gateOff(); mEnv.gateOff(); for (auto& e : opEnv) e.gateOff();
+    }
+    int psRootNote() const
+    {
+        const int base = P.psFollow ? psHeldRoot : 48 + std::max (0, std::min (11, P.psRoot));
+        return base + 12 * std::max (-3, std::min (3, P.psOct));
+    }
+    // one sample of the three independent lane clocks; fires internal note events sample-accurately
+    void tickPolySeq()
+    {
+        if (! psActive) return;
+        const double t = psBeatNow() - psStart;
+        long long k[3]; int idx[3];
+        for (int l = 0; l < 3; ++l)
+        {
+            const auto& ln = P.psLane[(size_t) l];
+            const double sb = kRateBeats[std::max (0, std::min (kNumRates - 1, ln.div))];
+            k[l] = laneCounter (t, sb, (double) ln.phase);
+            idx[l] = laneStepIndex (k[l], ln.steps, ln.dir);
+        }
+        // gate release
+        if (psGateEnd >= 0.0 && t >= psGateEnd)
+        {
+            psGateEnd = -1.0; fEnv.gateOff(); aEnv.gateOff(); mEnv.gateOff(); for (auto& e : opEnv) e.gateOff();
+        }
+        // trigger lane: a new step -> maybe a new note using the CURRENT pitch-lane value
+        if (psFirst || k[0] != psLastK[0])
+        {
+            const int s = idx[0];
+            const float prob = P.psProb[(size_t) s];
+            const bool fire = P.psOnStep[(size_t) s] && (prob >= 0.999f || psRng.next() < prob);
+            if (fire)
+            {
+                const int note = degreeToMidi (psRootNote(), P.psScale, P.psDeg[(size_t) idx[1]]);
+                const float vel = clampf (psVel * (0.75f + 0.25f * P.psAcc[(size_t) s]) + 0.25f * P.psAcc[(size_t) s], 0.f, 1.f);
+                triggerVoice (note, vel, false);
+                psAccV = P.psAcc[(size_t) s];
+                psNote = note; ++psEvents;
+                const double sb = kRateBeats[std::max (0, std::min (kNumRates - 1, P.psLane[0].div))];
+                psGateEnd = t + sb * (double) clampf (P.psGate, 0.02f, 1.f);
+            }
+        }
+        for (int l = 0; l < 3; ++l) psLastK[l] = k[l];
+        psFirst = false;
+        psModY += (P.psModV[(size_t) idx[2]] - psModY) * psModCoef;
+        if ((ctrlCounter & 63) == 0)
+        {
+            for (int l = 0; l < 3; ++l) uiPsStep[(size_t) l].store (idx[l], std::memory_order_relaxed);
+            uiPsNote.store (psNote, std::memory_order_relaxed); uiPsMod.store (psModY, std::memory_order_relaxed);
+        }
+    }
+    float psMod (int dest) const { return (P.psOn && P.psModDest == dest) ? P.psModDepth * (psModY - 0.5f) * 2.f : 0.f; }
 
     void render (float* outL, float* outR, int n)
     {
         prepareBlock();
         const double dppq = beatsPerSec() / (double) sr;
-        for (int i = 0; i < n; ++i) { float l, r; renderSample (l, r); outL[i] = l; outR[i] = r; if (playing) ppq += dppq; }
+        const double dfree = beatsPerSec() / (double) sr;
+        for (int i = 0; i < n; ++i) { float l, r; if (psActive) tickPolySeq(); renderSample (l, r); outL[i] = l; outR[i] = r; if (playing) { ppq += dppq; psFree = ppq; } else psFree += dfree; psAccV *= psAccCoef; }
     }
 
     // value of a step's LFO at phase p (unipolar 0..1) — shared with the GUI preview
@@ -513,6 +623,9 @@ private:
     double flPh = 0.0; float flRnd = 0.f, flRndPrev = 0.f, flChaos = 0.37f, flY = 0.f, flRaw = 0.f, flTime = 0.f, flCoef = 1.f; int flLastCycle = -1;
     float subEnvV = 1.f, subCoef = 0.f;
     float laneY[4] { 0.5f, 0.5f, 0.5f, 0.5f }, accV = 0.f; int laneStep = -1; bool stepSkip = false; int skipHeldStep = 0;
+    // v5 poly sequencer state (own RNG so legacy randomness is untouched)
+    Rng psRng; bool psActive = false; int psHeldRoot = 60; double psStart = 0.0, psFree = 0.0, psGateEnd = -1.0;
+    long long psLastK[3] { 0, 0, 0 }; bool psFirst = true; int psNote = -1; float psModY = 0.5f, psModCoef = 1.f;
     int osFactor = 2; float dcX = 0.f, dcY = 0.f, dcR = 0.9995f;
     float smCut = -1.f, smRes = 0.f, smDrive = 0.f, smFm = 0.f, smGain = 1.f, smMacro[kNumMacros] {}, smCoef = 1.f; Env fEnv, aEnv, mEnv; Rng rng;
     float lastFilterOut = 0.f, pitchEnvV = 0.f, pitchEnvCoef = 0.f;
@@ -567,6 +680,9 @@ private:
             opEnv[i].set (o.a, o.d * clampf (P.fvDecay, 0.05f, 8.f), o.s, o.r, false, sr);
         }
         { const float tau = 0.0002f + P.flSmooth * P.flSmooth * 0.25f; flCoef = 1.f - std::exp (-1.f / (tau * sr)); }
+        { const float tau = 0.0005f + P.psModSmooth * P.psModSmooth * 0.15f; psModCoef = 1.f - std::exp (-1.f / (tau * sr)); }
+        if (! P.psOn && psActive) psStopSeq();
+        psAccCoef = std::exp (-1.f / (0.06f * sr));
         subCoef = P.subDecay > 0.0005f ? std::exp (-1.f / (P.subDecay * sr)) : 1.f;
         const int wantOs = (P.quality >= 1 && sr < 60000.f) ? 4 : 2;
         if (wantOs != osFactor) { osFactor = wantOs; osr = sr * (float) osFactor; dec.reset(); decA.reset(); decP.reset(); decPA.reset(); decS.reset(); decSA.reset(); }
@@ -825,12 +941,13 @@ private:
                      + P.keyTrack * (currentNote - 60.f) / 12.f
                      + md[DstCutoff] * 6.f
                      + (P.flOn ? P.flAmt * flv + P.flOffset : 0.f)
-                     + accV * P.accAmt * 2.f;
+                     + (accV + psAccV) * P.accAmt * 2.f
+                     + psMod (4) * 4.f;
         const float fc = clampf (std::exp2 (cutOct), 16.f, std::min (20000.f, osr * 0.42f));
         const float g = std::tan (kPi * fc / osr), G = g / (1.f + g);
-        const float res = clampf (smRes + P.resEnvAmount * fe + md[DstRes] * 0.6f + P.lnRes * (laneY[2] - 0.5f) * 1.2f, 0.f, 1.15f);
+        const float res = clampf (smRes + P.resEnvAmount * fe + md[DstRes] * 0.6f + P.lnRes * (laneY[2] - 0.5f) * 1.2f + psMod (3) * 0.6f, 0.f, 1.15f);
         const float k = res * 4.1f;
-        const float drive = clampf (smDrive + md[DstDrive] * 0.6f + P.lnDrive * (laneY[3] - 0.5f) * 1.2f, 0.f, 1.f);
+        const float drive = clampf (smDrive + md[DstDrive] * 0.6f + P.lnDrive * (laneY[3] - 0.5f) * 1.2f + psMod (5) * 0.6f, 0.f, 1.f);
         const float dGain = 1.f + drive * drive * 22.f, dBias = 0.15f * drive, dComp = 1.f / (1.f + drive * 2.2f);
         const float wA = clampf (P.waveA + md[DstWaveA] * 3.f, 0.f, 3.f);
         const float wB = clampf (P.waveB + md[DstWaveB] * 3.f, 0.f, 3.f);
@@ -845,14 +962,14 @@ private:
         if (fvActive)
         {
             const float f0 = 440.f * std::exp2 (pitchSemis / 12.f);
-            const float chr = clampf (P.fvChar + P.lnChar * (laneY[1] - 0.5f) * 2.f, 0.f, 1.f);
+            const float chr = clampf (P.fvChar + P.lnChar * (laneY[1] - 0.5f) * 2.f + psMod (1), 0.f, 1.f);
             static const float kInh[4] = { 0.f, 0.137f, 0.291f, 0.553f };   // pushes modulators off integer ratios
-            float idx = clampf (P.fvBright, 0.f, 3.f)
+            float idx = clampf (P.fvBright, 0.f, 3.f) * std::exp2 (psMod (0) * 2.f)
                       * (1.f - P.fvVel + P.fvVel * velocity * 1.3f)
                       * std::exp2 (-P.fvKey * (currentNote - 60.f) / 24.f)
                       * std::exp2 (P.lnFm * (laneY[0] - 0.5f) * 4.f)
                       * std::exp2 (P.flFm * flv * 2.f)
-                      * (1.f + accV * P.accAmt)
+                      * (1.f + (accV + psAccV) * P.accAmt)
                       * std::exp2 (md[DstFmIndex] * 3.f);
             uiFmIndex.store (idx, std::memory_order_relaxed);
             int nCar = 0; for (int i = 0; i < 4; ++i) nCar += kAlgoCarrier[fvA][i] ? 1 : 0;
@@ -869,7 +986,7 @@ private:
             }
             bodyInc = clampf (f0 / osr, 0.f, 0.45f);
             wideInc = opInc[0] * (1.f + 0.0045f * P.fvWidth);
-            fvFbAmt = clampf (P.fvFb, 0.f, 1.f) * 0.3f;
+            fvFbAmt = clampf (P.fvFb + psMod (2), 0.f, 1.f) * 0.3f;
             fvHpCoef = P.fvLowCut > 0.001f ? 1.f - std::exp (-kTwoPi * f0 * (0.2f + 0.65f * P.fvLowCut) / osr) : 0.f;
         }
         const float bodyLvl = P.fvBody * (opE[0] > 0.f ? opE[0] : 0.f);
