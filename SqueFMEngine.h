@@ -102,7 +102,23 @@ struct StepParams
     int   mode  = 0;               // 0 = BPM sync, 1 = Hz
     int   sync  = 5;               // kStepSyncNames index (0 = HOLD)
     float hz    = 4.f;             // used when mode == Hz
+    // extra sequencer lanes (v4) - neutral unless the lane depth is non-zero
+    float fmv = 0.5f, chr = 0.5f, res = 0.5f, drv = 0.5f;   // 0..1, 0.5 = no change
+    float prob = 1.f, acc = 0.f;                            // step probability, accent
 };
+
+// one FM operator of the 4-op FM voice
+struct FmOpParams
+{
+    float ratio = 1.f, fine = 0.f, level = 0.f;
+    float a = 0.001f, d = 0.4f, s = 0.5f, r = 0.2f;
+};
+
+inline constexpr const char* kFmAlgoNames[] = { "4>3>2>1 Stack", "3+4>2>1 Y", "4>3>1 + 2>1", "4>3 | 2>1 Twin", "4>1,2,3 Fan",
+                                                "3>2>1 + 4 Sine", "Cross Ring", "Additive" };
+constexpr int kNumFmAlgos = 8;
+inline constexpr const char* kFmRouteNames[] = { "Into Filter", "Parallel Clean" };
+inline constexpr const char* kSubShapeNames[] = { "Square", "Sine", "Triangle" };
 
 struct LfoParams
 {
@@ -166,6 +182,25 @@ struct Params
     float reverbMix = 0.f, reverbSize = 0.7f, reverbDamp = 0.5f;
     float outGainDb = 0.f;
     int   quality = 1;          // 0 = 2x oversampling, 1 = 4x (below 60 kHz host rate)
+
+    // ===== v4 additions (all default to "off" so older projects sound unchanged) =====
+    // dedicated FILTER LFO -> cutoff (log domain, octaves)
+    bool  flOn = false, flRetrig = true, flBipolar = true;
+    int   flMode = 0, flSync = 7, flShape = 0;
+    float flHz = 2.f, flAmt = 2.f, flPhase = 0.f, flOffset = 0.f, flSmooth = 0.f, flRise = 0.f, flFm = 0.f;
+    // filter bass compensation (keeps the fundamental when resonance is high)
+    float filterBass = 0.f;
+    // sub layer
+    int   subShape = 0; bool subPost = false; float subPhase = 0.f, subDecay = 0.f, subSus = 1.f;
+    // post-filter saturation (parallel)
+    float satDrive = 0.f, satMix = 1.f, satAsym = 0.f, satFold = 0.f;
+    // 4-operator FM voice
+    float fvLevel = 0.f; int fvAlgo = 0, fvRoute = 0;
+    float fvBright = 1.f, fvBody = 0.f, fvChar = 0.f, fvDecay = 1.f, fvFb = 0.f, fvWidth = 0.f, fvVel = 0.3f, fvKey = 0.f;
+    float fvLowCut = 0.f;      // 0 = off .. 1 = 12 dB/oct high-pass just under the played fundamental (removes FM sub-sideband mud)
+    std::array<FmOpParams, 4> op {};
+    // sequencer lanes
+    float lnFm = 0.f, lnChar = 0.f, lnRes = 0.f, lnDrive = 0.f, accAmt = 0.5f;
 };
 
 // ------------------------------------------------------------------ util -----
@@ -230,8 +265,9 @@ struct Ladder
 {
     float s[4] {}, y[5] {};
     void reset() { std::memset (s, 0, sizeof (s)); std::memset (y, 0, sizeof (y)); }
-    inline void process (float x, float G, float k)
+    inline void process (float x, float G, float k, float bassComp = 0.f)
     {
+        x *= 1.f + k * bassComp;   // restores passband (DC) gain lost to resonance feedback
         const float oneMinusG = 1.f - G;
         const float b1 = s[0] * oneMinusG, b2 = s[1] * oneMinusG, b3 = s[2] * oneMinusG, b4 = s[3] * oneMinusG;
         const float G2 = G * G, G3 = G2 * G, G4 = G3 * G;
@@ -357,7 +393,8 @@ class Engine
 public:
     // ---- GUI feedback ----
     std::atomic<int>   uiStep { 0 };
-    std::atomic<float> uiStepFrac { 0.f }, uiSeqValue { 0.f }, uiCutoffHz { 600.f }, uiEnv { 0.f };
+    std::atomic<float> uiStepFrac { 0.f }, uiSeqValue { 0.f }, uiCutoffHz { 600.f }, uiEnv { 0.f }, uiFilterLfo { 0.f }, uiFmIndex { 0.f };
+    std::array<std::atomic<float>, 4> uiOpEnv {};
     std::array<std::atomic<float>, NumSrc> uiSrc {};
     std::array<std::atomic<float>, kMatrixSlots> uiSlot {};
     static constexpr int kScopeSize = 256;
@@ -379,7 +416,9 @@ public:
 
     void reset()
     {
-        ladder.reset(); dec.reset(); decA.reset(); fdn.reset(); dcX = dcY = 0.f; smCut = -1.f;
+        ladder.reset(); dec.reset(); decA.reset(); decP.reset(); decPA.reset(); decS.reset(); decSA.reset(); fdn.reset(); dcX = dcY = 0.f; smCut = -1.f;
+        for (auto& e : opEnv) e = {}; std::memset (opPh, 0, sizeof (opPh)); std::memset (opOut, 0, sizeof (opOut)); opFbPrev[0] = opFbPrev[1] = 0.f;
+        flPh = 0.0; flY = 0.f; flTime = 0.f; flLastCycle = -1; laneStep = -1; for (auto& l : laneY) l = 0.5f; accV = 0.f;
         std::fill (delayL.begin(), delayL.end(), 0.f); std::fill (delayR.begin(), delayR.end(), 0.f);
         std::fill (combBuf.begin(), combBuf.end(), 0.f);
         for (auto& f : formant) f.reset();
@@ -405,11 +444,15 @@ public:
         if (! wasHeld || ! P.legato)
         {
             fEnv.gateOn(); aEnv.gateOn(); mEnv.gateOn();
+            for (auto& e : opEnv) e.gateOn();
+            subEnvV = 1.f;
+            if (P.flRetrig) { flPh = (double) P.flPhase; flLastCycle = -1; }
+            flTime = 0.f;
             pitchEnvV = 1.f;
             noteRandom = rng.bi();
             if (P.seqRetrig && ! playing) { internalPos = 0.0; internalSec = 0.0; }
             for (int i = 0; i < kNumLfos; ++i) if (P.lfo[(size_t) i].retrig) lfoState[(size_t) i].phase = 0.0;
-            if (P.oscReset && aEnv.v < 0.05f) { oscA.phase = 0.f; oscB.phase = 0.f; oscSub.phase = 0.f; fmPhase = 0.f; }
+            if (P.oscReset && aEnv.v < 0.05f) { oscA.phase = 0.f; oscB.phase = 0.f; oscSub.phase = P.subPhase; fmPhase = 0.f; for (auto& ph : opPh) ph = 0.f; bodyPh = 0.f; wideR = 0.f; }
             if (! wasHeld && aEnv.v < 0.0001f) currentNote = targetNote;
         }
     }
@@ -417,10 +460,10 @@ public:
     void noteOff (int note)
     {
         removeHeld (note);
-        if (heldCount > 0) { targetNote = (float) held[heldCount - 1]; if (! P.legato) { fEnv.gateOn(); aEnv.gateOn(); mEnv.gateOn(); } }
-        else { fEnv.gateOff(); aEnv.gateOff(); mEnv.gateOff(); }
+        if (heldCount > 0) { targetNote = (float) held[heldCount - 1]; if (! P.legato) { fEnv.gateOn(); aEnv.gateOn(); mEnv.gateOn(); for (auto& e : opEnv) e.gateOn(); } }
+        else { fEnv.gateOff(); aEnv.gateOff(); mEnv.gateOff(); for (auto& e : opEnv) e.gateOff(); }
     }
-    void allNotesOff() { heldCount = 0; fEnv.gateOff(); aEnv.gateOff(); mEnv.gateOff(); }
+    void allNotesOff() { heldCount = 0; fEnv.gateOff(); aEnv.gateOff(); mEnv.gateOff(); for (auto& e : opEnv) e.gateOff(); }
 
     void render (float* outL, float* outR, int n)
     {
@@ -463,6 +506,13 @@ private:
     MorphOsc oscA, oscB, oscSub;
     float fmPhase = 0.f, fmPrev1 = 0.f, fmPrev2 = 0.f;
     Ladder ladder; Decimator2x dec, decA;
+    // v4 state
+    Decimator2x decP, decPA, decS, decSA;                         // parallel (post-filter) path: FM clean + sub post
+    float fvHp1 = 0.f, fvHp2 = 0.f, fvHpCoef = 0.f;
+    Env opEnv[4]; float opPh[4] {}, opOut[4] {}, opFbPrev[2] {}, bodyPh = 0.f, wideR = 0.f, wideOut = 0.f;
+    double flPh = 0.0; float flRnd = 0.f, flRndPrev = 0.f, flChaos = 0.37f, flY = 0.f, flRaw = 0.f, flTime = 0.f, flCoef = 1.f; int flLastCycle = -1;
+    float subEnvV = 1.f, subCoef = 0.f;
+    float laneY[4] { 0.5f, 0.5f, 0.5f, 0.5f }, accV = 0.f; int laneStep = -1; bool stepSkip = false; int skipHeldStep = 0;
     int osFactor = 2; float dcX = 0.f, dcY = 0.f, dcR = 0.9995f;
     float smCut = -1.f, smRes = 0.f, smDrive = 0.f, smFm = 0.f, smGain = 1.f, smMacro[kNumMacros] {}, smCoef = 1.f; Env fEnv, aEnv, mEnv; Rng rng;
     float lastFilterOut = 0.f, pitchEnvV = 0.f, pitchEnvCoef = 0.f;
@@ -511,8 +561,15 @@ private:
         pitchEnvCoef = std::exp (-1.f / (std::max (0.001f, P.pitchEnvDecay) * sr));
         spitCoef = std::exp (-1.f / (std::max (0.002f, P.spitDecay) * sr));
         outGain = std::pow (10.f, P.outGainDb / 20.f);
+        for (int i = 0; i < 4; ++i)
+        {
+            const auto& o = P.op[(size_t) i];
+            opEnv[i].set (o.a, o.d * clampf (P.fvDecay, 0.05f, 8.f), o.s, o.r, false, sr);
+        }
+        { const float tau = 0.0002f + P.flSmooth * P.flSmooth * 0.25f; flCoef = 1.f - std::exp (-1.f / (tau * sr)); }
+        subCoef = P.subDecay > 0.0005f ? std::exp (-1.f / (P.subDecay * sr)) : 1.f;
         const int wantOs = (P.quality >= 1 && sr < 60000.f) ? 4 : 2;
-        if (wantOs != osFactor) { osFactor = wantOs; osr = sr * (float) osFactor; dec.reset(); decA.reset(); }
+        if (wantOs != osFactor) { osFactor = wantOs; osr = sr * (float) osFactor; dec.reset(); decA.reset(); decP.reset(); decPA.reset(); decS.reset(); decSA.reset(); }
         if (smCut < 0.f) { smCut = P.cutoff; smRes = P.resonance; smDrive = P.drive; smFm = P.fmIndex; smGain = outGain; for (int m = 0; m < kNumMacros; ++m) smMacro[m] = P.macro[(size_t) m]; }
     }
 
@@ -562,7 +619,11 @@ private:
         const int cyc = (int) std::floor (cycles);
         const float ph = (float) (cycles - (double) cyc);
 
-        if (step != lastStep) { lastStep = step; wanderJit = P.wander * rng.bi() * 0.25f; lastCycle = -1; }
+        if (step != lastStep)
+        {
+            lastStep = step; wanderJit = P.wander * rng.bi() * 0.25f; lastCycle = -1;
+            stepSkip = st.prob < 0.999f && rng.next() > st.prob;   // rng only consumed when probability is used
+        }
         if (cyc != lastCycle)
         {
             lastCycle = cyc;
@@ -573,9 +634,16 @@ private:
         }
         float u = 1.f;
         if (! hold) u = st.shape == 8 ? stepShape (8, ph, chaosCur, chaosPrev) : stepShape (st.shape, ph, randCur, randPrev);
-        seqUni = u;
-        const float target = clampf (st.lo + (st.hi - st.lo) * u + wanderJit, 0.f, 1.f);
-        seqY += (target - seqY) * seqCoef;
+        if (! stepSkip)
+        {
+            seqUni = u;
+            const float target = clampf (st.lo + (st.hi - st.lo) * u + wanderJit, 0.f, 1.f);
+            seqY += (target - seqY) * seqCoef;
+            const float lt[4] = { st.fmv, st.chr, st.res, st.drv };
+            for (int l = 0; l < 4; ++l) laneY[l] += (lt[l] - laneY[l]) * seqCoef;
+            accV = st.acc * (1.f - frac);
+        }
+        else accV *= 0.999f;
 
         uiStep.store (step, std::memory_order_relaxed);
         uiStepFrac.store (frac, std::memory_order_relaxed);
@@ -621,6 +689,60 @@ private:
         }
     }
 
+    // ------------------------------------------------------ filter LFO -------
+    // dedicated LFO wired straight to cutoff; returns the shaped value (-1..1 bipolar / 0..1 unipolar)
+    float tickFilterLfo()
+    {
+        double cycles;
+        if (P.flMode == 0)
+        {
+            const double period = kRateBeats[std::max (0, std::min (kNumRates - 1, P.flSync))];
+            if (playing && ! P.flRetrig) cycles = ppq / period + (double) P.flPhase;
+            else { flPh += beatsPerSec() / period / sr; cycles = flPh; }
+        }
+        else { flPh += (double) std::max (0.01f, P.flHz) / sr; cycles = flPh; }
+        const int cyc = (int) std::floor (cycles);
+        const float p = (float) (cycles - (double) cyc);
+        if (cyc != flLastCycle)
+        {
+            flLastCycle = cyc; flRndPrev = flRnd; flRnd = rng.bi();
+            flChaos = clampf (3.9f * flChaos * (1.f - flChaos), 0.0001f, 0.9999f);
+        }
+        float v;
+        switch (P.flShape)
+        {
+            case 0: v = std::sin (kTwoPi * p); break;
+            case 1: v = p < 0.5f ? 4.f * p - 1.f : 3.f - 4.f * p; break;
+            case 2: v = 2.f * p - 1.f; break;
+            case 3: v = 1.f - 2.f * p; break;
+            case 4: v = p < 0.5f ? 1.f : -1.f; break;
+            case 5: v = flRnd; break;
+            case 6: v = flRndPrev + (flRnd - flRndPrev) * (0.5f - 0.5f * std::cos (kPi * p)); break;
+            case 7: v = flChaos * 2.f - 1.f; break;
+            default: v = 0.f;
+        }
+        flY += (v - flY) * flCoef;
+        flTime += 1.f / sr;
+        const float rise = P.flRise > 0.001f ? std::min (1.f, flTime / P.flRise) : 1.f;
+        return (P.flBipolar ? flY : 0.5f + 0.5f * flY) * rise;
+    }
+
+public:
+    static constexpr int kAlgoMods[kNumFmAlgos][4][4] = {
+        // [algo][dst op][src op] = 1 if src modulates dst   (ops 0..3 = OP1..OP4, OP1 is always a carrier)
+        { {0,1,0,0}, {0,0,1,0}, {0,0,0,1}, {0,0,0,0} },   // 4>3>2>1
+        { {0,1,0,0}, {0,0,1,1}, {0,0,0,0}, {0,0,0,0} },   // 3+4>2>1
+        { {0,1,1,0}, {0,0,0,0}, {0,0,0,1}, {0,0,0,0} },   // 4>3>1 + 2>1
+        { {0,1,0,0}, {0,0,0,0}, {0,0,0,1}, {0,0,0,0} },   // 4>3 | 2>1
+        { {0,0,0,1}, {0,0,0,1}, {0,0,0,1}, {0,0,0,0} },   // 4>1,2,3
+        { {0,1,0,0}, {0,0,1,0}, {0,0,0,0}, {0,0,0,0} },   // 3>2>1 + 4
+        { {0,1,1,0}, {0,0,1,0}, {0,0,0,1}, {1,0,0,0} },   // cross ring (OP1 -> OP4 one sample late)
+        { {0,0,0,0}, {0,0,0,0}, {0,0,0,0}, {0,0,0,0} },   // additive
+    };
+    static constexpr bool kAlgoCarrier[kNumFmAlgos][4] = {
+        { 1,0,0,0 }, { 1,0,0,0 }, { 1,0,0,0 }, { 1,0,1,0 }, { 1,1,1,0 }, { 1,0,0,1 }, { 1,0,0,0 }, { 1,1,1,1 } };
+private:
+
     // ------------------------------------------------------------ render -----
     void renderSample (float& outL, float& outR)
     {
@@ -634,6 +756,10 @@ private:
         for (int i = 0; i < kNumLfos; ++i)
             lfoVal[i] = tickLfo (i, std::exp2 (clampf (modDst[DstLfo1Rate + i], -1.f, 1.f) * 4.f));
         const float fe = fEnv.tick(), ae = aEnv.tick(), me = mEnv.tick();
+        float opE[4];
+        for (int i = 0; i < 4; ++i) opE[i] = opEnv[i].tick();
+        subEnvV = P.subSus + (subEnvV - P.subSus) * subCoef;
+        const float flv = P.flOn ? tickFilterLfo() : 0.f;
         pitchEnvV *= pitchEnvCoef;
 
         // spit: sparse random wet transients
@@ -697,12 +823,14 @@ private:
         float cutOct = baseOct + (seqOct - baseOct) * depth
                      + P.envAmount * fe * 6.f * velF
                      + P.keyTrack * (currentNote - 60.f) / 12.f
-                     + md[DstCutoff] * 6.f;
+                     + md[DstCutoff] * 6.f
+                     + (P.flOn ? P.flAmt * flv + P.flOffset : 0.f)
+                     + accV * P.accAmt * 2.f;
         const float fc = clampf (std::exp2 (cutOct), 16.f, std::min (20000.f, osr * 0.42f));
         const float g = std::tan (kPi * fc / osr), G = g / (1.f + g);
-        const float res = clampf (smRes + P.resEnvAmount * fe + md[DstRes] * 0.6f, 0.f, 1.15f);
+        const float res = clampf (smRes + P.resEnvAmount * fe + md[DstRes] * 0.6f + P.lnRes * (laneY[2] - 0.5f) * 1.2f, 0.f, 1.15f);
         const float k = res * 4.1f;
-        const float drive = clampf (smDrive + md[DstDrive] * 0.6f, 0.f, 1.f);
+        const float drive = clampf (smDrive + md[DstDrive] * 0.6f + P.lnDrive * (laneY[3] - 0.5f) * 1.2f, 0.f, 1.f);
         const float dGain = 1.f + drive * drive * 22.f, dBias = 0.15f * drive, dComp = 1.f / (1.f + drive * 2.2f);
         const float wA = clampf (P.waveA + md[DstWaveA] * 3.f, 0.f, 3.f);
         const float wB = clampf (P.waveB + md[DstWaveB] * 3.f, 0.f, 3.f);
@@ -710,7 +838,44 @@ private:
         const float lvSub = clampf (P.levelSub + md[DstSub], 0.f, 1.f);
         const float biteAmt = clampf (P.biteAmount + md[DstBite], 0.f, 1.f);
 
-        // ---------- voice @ 2x ----------
+        // ---------- 4-op FM voice setup ----------
+        const bool fvActive = P.fvLevel > 0.0005f;
+        float opInc[4] {}, opDepth[4] {}, opCar[4] {}, bodyInc = 0.f, wideInc = 0.f, fvFbAmt = 0.f;
+        int fvA = std::max (0, std::min (kNumFmAlgos - 1, P.fvAlgo));
+        if (fvActive)
+        {
+            const float f0 = 440.f * std::exp2 (pitchSemis / 12.f);
+            const float chr = clampf (P.fvChar + P.lnChar * (laneY[1] - 0.5f) * 2.f, 0.f, 1.f);
+            static const float kInh[4] = { 0.f, 0.137f, 0.291f, 0.553f };   // pushes modulators off integer ratios
+            float idx = clampf (P.fvBright, 0.f, 3.f)
+                      * (1.f - P.fvVel + P.fvVel * velocity * 1.3f)
+                      * std::exp2 (-P.fvKey * (currentNote - 60.f) / 24.f)
+                      * std::exp2 (P.lnFm * (laneY[0] - 0.5f) * 4.f)
+                      * std::exp2 (P.flFm * flv * 2.f)
+                      * (1.f + accV * P.accAmt)
+                      * std::exp2 (md[DstFmIndex] * 3.f);
+            uiFmIndex.store (idx, std::memory_order_relaxed);
+            int nCar = 0; for (int i = 0; i < 4; ++i) nCar += kAlgoCarrier[fvA][i] ? 1 : 0;
+            const float carNorm = 1.f / std::sqrt ((float) nCar);
+            for (int i = 0; i < 4; ++i)
+            {
+                const auto& o = P.op[(size_t) i];
+                const float r = std::max (0.001f, o.ratio) * (1.f + chr * kInh[i]) * std::exp2 (o.fine / 1200.f);
+                opInc[i] = clampf (f0 * r / osr, 0.f, 0.45f);
+                const float lvl = o.level * opE[i];
+                if (kAlgoCarrier[fvA][i]) opCar[i] = lvl * carNorm;
+                opDepth[i] = lvl * idx * 1.6f;                     // modulation depth in cycles
+                uiOpEnv[(size_t) i].store (opE[i], std::memory_order_relaxed);
+            }
+            bodyInc = clampf (f0 / osr, 0.f, 0.45f);
+            wideInc = opInc[0] * (1.f + 0.0045f * P.fvWidth);
+            fvFbAmt = clampf (P.fvFb, 0.f, 1.f) * 0.3f;
+            fvHpCoef = P.fvLowCut > 0.001f ? 1.f - std::exp (-kTwoPi * f0 * (0.2f + 0.65f * P.fvLowCut) / osr) : 0.f;
+        }
+        const float bodyLvl = P.fvBody * (opE[0] > 0.f ? opE[0] : 0.f);
+        const float subLv = lvSub * (P.subDecay > 0.0005f ? subEnvV : 1.f);
+
+        // ---------- voice @ 2x / 4x ----------
         for (int os = 0; os < osFactor; ++os)
         {
             const float op = std::sin (kTwoPi * (fmPhase + fmFb * (fmPrev1 + fmPrev2)));
@@ -723,22 +888,71 @@ private:
             const float a = oscA.tick (incA, wA, pmA);
             if (P.syncB && oscA.wrapped) oscB.phase = oscA.phase * (incB / std::max (incA, 1e-9f));
             const float b = oscB.tick (incB, wB, pmB);
-            const float sub = oscSub.tick (subInc, 2.f, 0.f);
+            float sub;
+            if (P.subShape == 0) sub = oscSub.tick (subInc, 2.f, 0.f);
+            else
+            {
+                const float t = oscSub.phase; oscSub.tick (subInc, 0.f, 0.f);
+                sub = P.subShape == 1 ? std::sin (kTwoPi * t) : (t < 0.5f ? 4.f * t - 1.f : 3.f - 4.f * t);
+            }
 
-            float mix = (a * P.levelA + b * P.levelB + op * P.levelFm + sub * lvSub + rng.bi() * lvNoise) * 0.5f;
+            float fv = 0.f, side = 0.f;
+            if (fvActive)
+            {
+                float out[4];
+                for (int i = 3; i >= 0; --i)
+                {
+                    float pm = 0.f;
+                    for (int src = 0; src < 4; ++src)
+                        if (kAlgoMods[fvA][i][src]) pm += (src > i ? out[src] : opOut[src]) * opDepth[src];
+                    if (i == 3) pm += fvFbAmt * (opFbPrev[0] + opFbPrev[1]);
+                    out[i] = std::sin (kTwoPi * (opPh[i] + pm));
+                    opPh[i] += opInc[i]; if (opPh[i] >= 1.f) opPh[i] -= 1.f;
+                }
+                opFbPrev[1] = opFbPrev[0]; opFbPrev[0] = out[3];
+                for (int i = 0; i < 4; ++i) { opOut[i] = out[i]; fv += out[i] * opCar[i]; }
+                fv += std::sin (kTwoPi * bodyPh) * bodyLvl;
+                bodyPh += bodyInc; if (bodyPh >= 1.f) bodyPh -= 1.f;
+                if (P.fvWidth > 0.001f)
+                {
+                    float pm0 = 0.f;
+                    for (int src = 1; src < 4; ++src) if (kAlgoMods[fvA][0][src]) pm0 += out[src] * opDepth[src];
+                    const float wr = std::sin (kTwoPi * (wideR + pm0)) * opCar[0];
+                    wideR += wideInc; if (wideR >= 1.f) wideR -= 1.f;
+                    side = (wr - out[0] * opCar[0]) * 0.5f * P.fvWidth;
+                }
+                if (fvHpCoef > 0.f) { fvHp1 += (fv - fvHp1) * fvHpCoef; const float h1 = fv - fvHp1; fvHp2 += (h1 - fvHp2) * fvHpCoef; fv = h1 - fvHp2; }
+                fv *= P.fvLevel; side *= P.fvLevel;
+            }
+
+            float mix = (a * P.levelA + b * P.levelB + op * P.levelFm + (P.subPost ? 0.f : sub * subLv) + rng.bi() * lvNoise
+                         + (P.fvRoute == 0 ? fv : 0.f)) * 0.5f;
             mix += lastFilterOut * P.feedback * 1.8f;
             float x = fastTanh (mix * dGain + dBias) - fastTanh (dBias);
             x *= (1.f + drive * 0.6f);
             if (! P.bitePost) x = bite (x, biteAmt);
-            ladder.process (x, G, k);
+            ladder.process (x, G, k, clampf (P.filterBass, 0.f, 1.f));
             float y = ladder.output (P.slope, P.filterMode) * (1.f + k * 0.28f);
             if (P.bitePost) y = bite (y, biteAmt);
+            if (P.satDrive > 0.001f)
+            {
+                // post-filter growl: asymmetric soft clip + optional fold, blended in parallel with the clean signal
+                const float g = 1.f + P.satDrive * 10.f, bias = P.satAsym * 0.35f;
+                float sat = fastTanh (y * g + bias) - fastTanh (bias);
+                if (P.satFold > 0.001f) sat = sat + (std::sin (sat * kPi * (0.5f + P.satFold * 1.5f)) - sat) * P.satFold;
+                sat *= 1.f / (1.f + P.satDrive * 1.5f);
+                y = y + (sat * 1.6f - y) * P.satMix;
+            }
             lastFilterOut = y;
             const float yo = y * dComp * 1.6f;
-            if (osFactor == 4) { decA.push (yo); if (os & 1) dec.push (decA.out()); }
-            else dec.push (yo);
+            const float po = (P.fvRoute == 1 ? fv * 0.5f : 0.f) + (P.subPost ? sub * subLv * 0.5f : 0.f);
+            if (osFactor == 4) { decA.push (yo); decPA.push (po); decSA.push (side); if (os & 1) { dec.push (decA.out()); decP.push (decPA.out()); decS.push (decSA.out()); } }
+            else { dec.push (yo); decP.push (po); decS.push (side); }
         }
         float v = dec.out();
+        const bool postActive = (fvActive && P.fvRoute == 1) || P.subPost;
+        const float vPost = postActive ? decP.out() : 0.f;
+        const float vSide = (fvActive && P.fvWidth > 0.001f) ? decS.out() : 0.f;
 
         // ---------- comb ----------
         const float combMix = clampf (P.combMix + md[DstCombMix], 0.f, 1.f);
@@ -758,6 +972,7 @@ private:
             v = v + (w * 0.8f - v) * combMix;
         }
 
+        v += vPost;
         const float amp = ae * (1.f - P.velToAmp + P.velToAmp * velocity) * clampf (1.f + md[DstVolume], 0.f, 2.f);
         v *= amp;
 
@@ -792,6 +1007,7 @@ private:
         const float pan = clampf (md[DstPan], -1.f, 1.f);
         float L = v * std::sqrt (0.5f * (1.f - pan)) * 1.4142f;
         float R = v * std::sqrt (0.5f * (1.f + pan)) * 1.4142f;
+        if (vSide != 0.f) { const float sd = vSide * amp; L += sd; R -= sd; }
 
         // ---------- phaser ----------
         if (P.phaserMix > 0.001f)
@@ -869,6 +1085,7 @@ private:
         if ((ctrlCounter & 63) == 0)
         {
             uiSeqValue.store (seqN, std::memory_order_relaxed);
+            uiFilterLfo.store (flv, std::memory_order_relaxed);
             uiCutoffHz.store (fc, std::memory_order_relaxed);
             uiEnv.store (ae, std::memory_order_relaxed);
             for (int s = 0; s < NumSrc; ++s) uiSrc[(size_t) s].store (src[s], std::memory_order_relaxed);

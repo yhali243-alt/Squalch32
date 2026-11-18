@@ -226,6 +226,88 @@ inline const std::vector<Desc>& paramTable()
             d = {}; d.id = stepId (i, "hz"); d.name = n + "Hz"; d.kind = Desc::Float; d.min = 0.05f; d.max = 60; d.centre = 4; d.unit = "Hz";
             d.get = [i] (const Params& p) { return p.steps[(size_t) i].hz; }; d.set = [i] (Params& p, float x) { p.steps[(size_t) i].hz = x; }; v.push_back (d);
         }
+        // ===================== v4 parameters (appended; never reorder) =====================
+        {
+            std::vector<Desc> w = {
+                B ("flOn", "Filter LFO On", &Params::flOn),
+                C ("flMode", "Filter LFO Mode", names (kSyncHzNames, 2), &Params::flMode),
+                C ("flSync", "Filter LFO Sync", names (kRateNames, kNumRates), &Params::flSync),
+                F ("flHz", "Filter LFO Hz", 0.02f, 40, 2, &Params::flHz, "Hz"),
+                C ("flShape", "Filter LFO Shape", names (kLfoShapeNames, kNumLfoShapes), &Params::flShape),
+                F ("flAmt", "Filter LFO Amount", 0, 6, -1, &Params::flAmt, "oct"),
+                F ("flPhase", "Filter LFO Phase", 0, 1, -1, &Params::flPhase),
+                F ("flOffset", "Filter LFO Offset", -4, 4, -1, &Params::flOffset, "oct", true),
+                F ("flSmooth", "Filter LFO Smooth", 0, 1, -1, &Params::flSmooth),
+                F ("flRise", "Filter LFO Rise", 0, 4, 0.5f, &Params::flRise, "s"),
+                B ("flRetrig", "Filter LFO Retrig", &Params::flRetrig),
+                B ("flBip", "Filter LFO Bipolar", &Params::flBipolar),
+                F ("flFm", "Filter LFO > FM", -1, 1, -1, &Params::flFm, "", true),
+                F ("fBass", "Filter Bass Keep", 0, 1, -1, &Params::filterBass),
+                C ("subShape", "Sub Shape", names (kSubShapeNames, 3), &Params::subShape),
+                B ("subPost", "Sub Clean (post filter)", &Params::subPost),
+                F ("subPhase", "Sub Phase", 0, 1, -1, &Params::subPhase),
+                F ("subDecay", "Sub Decay", 0, 4, 0.4f, &Params::subDecay, "s"),
+                F ("subSus", "Sub Sustain", 0, 1, -1, &Params::subSus),
+                F ("satDrive", "Growl Drive", 0, 1, -1, &Params::satDrive),
+                F ("satMix", "Growl Mix", 0, 1, -1, &Params::satMix),
+                F ("satAsym", "Growl Asym", 0, 1, -1, &Params::satAsym),
+                F ("satFold", "Growl Fold", 0, 1, -1, &Params::satFold),
+                F ("fvLevel", "FM Voice Level", 0, 1, -1, &Params::fvLevel),
+                C ("fvAlgo", "FM Algorithm", names (kFmAlgoNames, kNumFmAlgos), &Params::fvAlgo),
+                C ("fvRoute", "FM Route", names (kFmRouteNames, 2), &Params::fvRoute),
+                F ("fvBright", "FM Brightness", 0, 3, 1, &Params::fvBright),
+                F ("fvBody", "FM Body", 0, 1, -1, &Params::fvBody),
+                F ("fvChar", "FM Character", 0, 1, -1, &Params::fvChar),
+                F ("fvDecay", "FM Decay", 0.1f, 6, 1, &Params::fvDecay, "x"),
+                F ("fvFb", "FM Feedback", 0, 1, -1, &Params::fvFb),
+                F ("fvWidth", "FM Width", 0, 1, -1, &Params::fvWidth),
+                F ("fvVel", "FM Velocity", 0, 1, -1, &Params::fvVel),
+                F ("fvKey", "FM Key Scale", -1, 1, -1, &Params::fvKey, "", true),
+                F ("fvLowCut", "FM Low Cut", 0, 1, -1, &Params::fvLowCut),
+                F ("lnFm", "Lane FM Depth", -1, 1, -1, &Params::lnFm, "", true),
+                F ("lnChar", "Lane Character Depth", -1, 1, -1, &Params::lnChar, "", true),
+                F ("lnRes", "Lane Resonance Depth", -1, 1, -1, &Params::lnRes, "", true),
+                F ("lnDrive", "Lane Drive Depth", -1, 1, -1, &Params::lnDrive, "", true),
+                F ("accAmt", "Accent Amount", 0, 1, -1, &Params::accAmt),
+            };
+            for (auto& d : w) v.push_back (d);
+            for (int i = 0; i < 4; ++i)
+            {
+                const std::string n = "FM Op " + std::to_string (i + 1) + " ";
+                const std::string pre = "op" + std::to_string (i + 1);
+                auto opF = [&] (const char* w2, const char* nm, float mn, float mx, float ctr, float FmOpParams::* f, const char* unit)
+                {
+                    Desc d; d.id = pre + w2; d.name = n + nm; d.kind = Desc::Float; d.min = mn; d.max = mx; d.centre = ctr; d.unit = unit;
+                    d.get = [i, f] (const Params& p) { return p.op[(size_t) i].*f; };
+                    d.set = [i, f] (Params& p, float x) { p.op[(size_t) i].*f = x; };
+                    v.push_back (d);
+                };
+                opF ("ratio", "Ratio", 0.125f, 24, 2, &FmOpParams::ratio, "x");
+                opF ("fine", "Fine", -100, 100, -1, &FmOpParams::fine, "ct");
+                opF ("level", "Level", 0, 1, -1, &FmOpParams::level, "");
+                opF ("a", "Attack", 0.0005f, 4, 0.05f, &FmOpParams::a, "s");
+                opF ("d", "Decay", 0.002f, 8, 0.4f, &FmOpParams::d, "s");
+                opF ("s", "Sustain", 0, 1, -1, &FmOpParams::s, "");
+                opF ("r", "Release", 0.002f, 8, 0.3f, &FmOpParams::r, "s");
+            }
+            for (int i = 0; i < kMaxSteps; ++i)
+            {
+                const std::string n = "Step " + std::to_string (i + 1) + " ";
+                auto stF = [&] (const char* w2, const char* nm, float StepParams::* f)
+                {
+                    Desc d; d.id = stepId (i, w2); d.name = n + nm; d.kind = Desc::Float; d.min = 0; d.max = 1;
+                    d.get = [i, f] (const Params& p) { return p.steps[(size_t) i].*f; };
+                    d.set = [i, f] (Params& p, float x) { p.steps[(size_t) i].*f = x; };
+                    v.push_back (d);
+                };
+                stF ("fm", "FM", &StepParams::fmv);
+                stF ("chr", "Character", &StepParams::chr);
+                stF ("rs", "Resonance", &StepParams::res);
+                stF ("dv", "Drive", &StepParams::drv);
+                stF ("pb", "Probability", &StepParams::prob);
+                stF ("ac", "Accent", &StepParams::acc);
+            }
+        }
         const Params defaults;
         for (auto& d : v) d.def = d.get (defaults);
         return v;

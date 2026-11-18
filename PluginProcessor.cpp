@@ -11,6 +11,7 @@ static String formatValue (float v, const std::string& u)
     if (u == "st")  return String (v, 1) + " st";
     if (u == "ct")  return String (v, 0) + " ct";
     if (u == "x")   return String (v, 2) + "x";
+    if (u == "oct") return String (v, 2) + " oct";
     return String (v, 3);
 }
 
@@ -52,7 +53,9 @@ SqueFMProcessor::SqueFMProcessor()
 {
     for (const auto& d : sq::paramTable())
         bound.push_back ({ &d, apvts.getRawParameterValue (d.id) });
-    if (presets.size() > 1) { applyPreset (presets[1].p); currentProgram = 1; }
+    int start = presets.size() > 1 ? 1 : 0;
+    for (int i = 0; i < (int) presets.size(); ++i) if (presets[(size_t) i].name == "A Fat WOW") start = i;
+    applyPreset (presets[(size_t) start].p); currentProgram = start;
 }
 
 bool SqueFMProcessor::isBusesLayoutSupported (const BusesLayout& layouts) const
@@ -142,6 +145,15 @@ float SqueFMProcessor::getParam (const String& id) const
 void SqueFMProcessor::applyPreset (const sq::Params& p)
 {
     for (const auto& d : sq::paramTable()) setParam (d.id, d.get (p));
+}
+
+void SqueFMProcessor::applyFmFamily (int family)
+{
+    sq::Params cur;
+    for (auto& b : bound) b.d->set (cur, b.v->load());
+    sq::applyFmFamily (cur, family);
+    for (const auto& d : sq::paramTable())
+        if (d.id.rfind ("op", 0) == 0 || d.id.rfind ("fv", 0) == 0) setParam (d.id, d.get (cur));
 }
 
 void SqueFMProcessor::randomizeSteps()

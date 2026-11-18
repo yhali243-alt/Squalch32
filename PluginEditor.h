@@ -138,6 +138,45 @@ private:
     std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> aSrc, aVia, aDst;
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> aAmt;
 };
+// v4: dedicated filter LFO scope (LFO value history + live cutoff)
+class FilterLfoView : public juce::Component
+{
+public:
+    explicit FilterLfoView (SqueFMProcessor& p) : proc (p) {}
+    void paint (juce::Graphics&) override;
+    void push();
+private:
+    SqueFMProcessor& proc; std::array<float, 160> hist {}; int w = 0;
+};
+
+// v4: FM algorithm diagram with live operator envelopes
+class FmAlgoView : public juce::Component
+{
+public:
+    explicit FmAlgoView (SqueFMProcessor& p) : proc (p) {}
+    void paint (juce::Graphics&) override;
+private:
+    SqueFMProcessor& proc;
+};
+
+// v4: per-step lane editor (FM / character / resonance / drive / probability / accent)
+class LaneEditor : public juce::Component
+{
+public:
+    explicit LaneEditor (SqueFMProcessor&);
+    void paint (juce::Graphics&) override;
+    void mouseDown (const juce::MouseEvent&) override;
+    void mouseDrag (const juce::MouseEvent&) override;
+    void mouseUp (const juce::MouseEvent&) override;
+    void mouseDoubleClick (const juce::MouseEvent&) override;
+private:
+    SqueFMProcessor& proc; int lane = 0; int lastStep = -1;
+    std::vector<juce::RangedAudioParameter*> touched;
+    juce::Rectangle<float> bars, tabsR, depthR;
+    juce::RangedAudioParameter* stepParam (int lane, int step) const;
+    juce::RangedAudioParameter* depthParam (int lane) const;
+    void setAt (juce::Point<float>, bool reset = false);
+};
 } // namespace ui
 
 // =================================================================== EDITOR
@@ -151,7 +190,7 @@ public:
     static constexpr int W = 1280, H = 860;
 
 private:
-    enum Page { Synth, Seq, Mod, Fx, Always };
+    enum Page { Synth, Seq, Mod, Fx, Always, Main, Fm };
     struct Panel
     {
         juce::String title; juce::Rectangle<int> r; int cols; juce::Colour accent; Page page;
@@ -181,7 +220,7 @@ private:
     Content content { *this };
     std::vector<std::unique_ptr<ui::ControlCell>> cells;
     std::vector<Panel> panels;
-    Page page = Seq;
+    Page page = Main;
 
     ui::StepGrid grid;
     ui::FilterDisplay filterDisplay;
@@ -192,7 +231,11 @@ private:
     juce::ComboBox presetBox;
     juce::TextButton prevBtn { "<" }, nextBtn { ">" };
     juce::TextButton randBtn { "RANDOM" }, mutateBtn { "MUTATE" }, clearBtn { "CLEAR" };
-    std::array<juce::TextButton, 4> tabs;
+    std::array<juce::TextButton, 6> tabs;
+    ui::FilterLfoView flView { proc };
+    ui::FmAlgoView algoView { proc };
+    ui::LaneEditor laneEditor { proc };
+    juce::ComboBox familyBox, familyBox2;
     std::array<juce::String, sq::kNumMacros> macroHints;
     juce::Image background;
     juce::SharedResourcePointer<juce::TooltipWindow> tooltipWindow;

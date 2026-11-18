@@ -630,6 +630,189 @@ void MatrixRow::paint (Graphics& g)
 } // namespace ui
 
 // ================================================================= EDITOR ==
+
+// =============================================================== v4 views ===
+namespace ui
+{
+void FilterLfoView::push()
+{
+    hist[(size_t) w] = proc.engine.uiFilterLfo.load (std::memory_order_relaxed);
+    w = (w + 1) % (int) hist.size();
+}
+
+void FilterLfoView::paint (Graphics& g)
+{
+    auto r = getLocalBounds().toFloat();
+    g.setColour (Colour (0xff0b0716)); g.fillRoundedRectangle (r, 8.f);
+    g.setColour (col::border); g.drawRoundedRectangle (r.reduced (0.5f), 8.f, 1.f);
+    const bool on = proc.getParam ("flOn") > 0.5f;
+    const bool bip = proc.getParam ("flBip") > 0.5f;
+    auto plot = r.reduced (10.f, 8.f).withTrimmedRight (150.f);
+    g.setColour (col::dim.withAlpha (0.25f)); g.drawHorizontalLine ((int) plot.getCentreY(), plot.getX(), plot.getRight());
+    Path p; const int n = (int) hist.size();
+    for (int i = 0; i < n; ++i)
+    {
+        float v = hist[(size_t) ((w + i) % n)];
+        if (! bip) v = v * 2.f - 1.f;
+        const float x = plot.getX() + plot.getWidth() * (float) i / (float) (n - 1);
+        const float y = plot.getCentreY() - v * plot.getHeight() * 0.45f;
+        if (i == 0) p.startNewSubPath (x, y); else p.lineTo (x, y);
+    }
+    g.setColour ((on ? col::pink : col::dim).withAlpha (on ? 1.f : 0.4f)); g.strokePath (p, PathStrokeType (2.f));
+    auto info = r.reduced (10.f).removeFromRight (140.f);
+    g.setFont (font (11.f, true)); g.setColour (col::dim);
+    g.drawText ("LIVE CUTOFF", info.removeFromTop (16.f), Justification::centredLeft);
+    const float hz = proc.engine.uiCutoffHz.load (std::memory_order_relaxed);
+    g.setFont (font (22.f, true)); g.setColour (on ? col::pink : col::text);
+    g.drawText (hz >= 1000.f ? String (hz / 1000.f, 2) + " kHz" : String ((int) hz) + " Hz", info.removeFromTop (30.f), Justification::centredLeft);
+    g.setFont (font (10.5f)); g.setColour (col::dim);
+    g.drawFittedText (on ? "LFO drives cutoff directly (octaves). Envelope and LFO stay independent." : "Filter LFO is OFF - switch it on for WOW movement.",
+                      info.toNearestInt(), Justification::topLeft, 3);
+}
+
+void FmAlgoView::paint (Graphics& g)
+{
+    auto r = getLocalBounds().toFloat();
+    g.setColour (Colour (0xff0b0716)); g.fillRoundedRectangle (r, 8.f);
+    const int a = jlimit (0, sq::kNumFmAlgos - 1, (int) proc.getParam ("fvAlgo"));
+    g.setFont (font (13.f, true)); g.setColour (col::gold);
+    g.drawText (sq::kFmAlgoNames[a], r.removeFromTop (24.f).reduced (8.f, 0.f), Justification::centredLeft);
+    // place operators: modulators above their targets
+    Point<float> pos[4];
+    const float cx = r.getCentreX(), top = r.getY() + 20.f, bottom = r.getBottom() - 46.f;
+    int depth[4] = { 0, 0, 0, 0 };
+    for (int pass = 0; pass < 4; ++pass)
+        for (int d = 0; d < 4; ++d) for (int s2 = 0; s2 < 4; ++s2)
+            if (sq::Engine::kAlgoMods[a][d][s2] && s2 > d) depth[s2] = jmax (depth[s2], depth[d] + 1);
+    int maxD = 0; for (int i : depth) maxD = jmax (maxD, i);
+    int countAt[4] = { 0, 0, 0, 0 }, idxAt[4] = { 0, 0, 0, 0 };
+    for (int i = 0; i < 4; ++i) ++countAt[depth[i]];
+    for (int i = 0; i < 4; ++i)
+    {
+        const int d = depth[i]; const int k = idxAt[d]++;
+        const float x = cx + ((float) k - (countAt[d] - 1) * 0.5f) * 86.f;
+        const float y = maxD == 0 ? (top + bottom) * 0.5f : bottom - (bottom - top) * (float) d / (float) maxD;
+        pos[i] = { x, y };
+    }
+    g.setColour (col::gold.withAlpha (0.6f));
+    for (int d = 0; d < 4; ++d) for (int s2 = 0; s2 < 4; ++s2)
+        if (sq::Engine::kAlgoMods[a][d][s2])
+        {
+            Path arrow; arrow.addArrow ({ pos[s2], pos[d].translated (0.f, s2 < d ? 0.f : -20.f) }, 2.f, 9.f, 8.f);
+            g.fillPath (arrow);
+        }
+    for (int i = 0; i < 4; ++i)
+    {
+        const bool car = sq::Engine::kAlgoCarrier[a][i];
+        const float env = proc.engine.uiOpEnv[(size_t) i].load (std::memory_order_relaxed);
+        auto box = Rectangle<float> (60.f, 40.f).withCentre (pos[i]);
+        g.setColour ((car ? col::cyan : col::gold).withAlpha (0.15f + 0.6f * jlimit (0.f, 1.f, env)));
+        g.fillRoundedRectangle (box, 6.f);
+        g.setColour (car ? col::cyan : col::gold); g.drawRoundedRectangle (box, 6.f, 1.5f);
+        g.setFont (font (12.f, true)); g.setColour (col::text);
+        g.drawText ("OP " + String (i + 1), box.withTrimmedBottom (14.f), Justification::centred);
+        g.setFont (font (9.5f)); g.setColour (col::dim);
+        g.drawText (car ? "carrier" : "mod", box.withTrimmedTop (22.f), Justification::centred);
+    }
+    g.setFont (font (10.5f)); g.setColour (col::dim);
+    g.drawFittedText ("cyan = heard (carrier)   gold = modulator   brightness = live envelope   OP4 has feedback",
+                      getLocalBounds().removeFromBottom (34).reduced (8, 2), Justification::centred, 2);
+}
+
+static const char* kLaneNames[] = { "FM TIMBRE", "CHARACTER", "RESONANCE", "DRIVE", "PROBABILITY", "ACCENT" };
+static const char* kLaneIds[]   = { "fm", "chr", "rs", "dv", "pb", "ac" };
+static const char* kLaneDepth[] = { "lnFm", "lnChar", "lnRes", "lnDrive", "", "accAmt" };
+
+LaneEditor::LaneEditor (SqueFMProcessor& p) : proc (p) {}
+
+RangedAudioParameter* LaneEditor::stepParam (int l, int step) const
+{
+    return dynamic_cast<RangedAudioParameter*> (proc.apvts.getParameter (sq::stepId (step, kLaneIds[l])));
+}
+RangedAudioParameter* LaneEditor::depthParam (int l) const
+{
+    return String (kLaneDepth[l]).isEmpty() ? nullptr : dynamic_cast<RangedAudioParameter*> (proc.apvts.getParameter (kLaneDepth[l]));
+}
+
+void LaneEditor::paint (Graphics& g)
+{
+    auto r = getLocalBounds().toFloat();
+    g.setColour (Colour (0xff0b0716)); g.fillRoundedRectangle (r, 8.f);
+    tabsR = r.removeFromTop (24.f);
+    const float tw = (tabsR.getWidth() - 220.f) / 6.f;
+    for (int l = 0; l < 6; ++l)
+    {
+        auto t = Rectangle<float> (tabsR.getX() + tw * l, tabsR.getY(), tw, tabsR.getHeight()).reduced (2.f);
+        g.setColour (l == lane ? col::lime.withAlpha (0.25f) : col::border.withAlpha (0.5f)); g.fillRoundedRectangle (t, 5.f);
+        g.setColour (l == lane ? col::lime : col::dim); g.setFont (font (10.5f, true)); g.drawText (kLaneNames[l], t, Justification::centred);
+    }
+    depthR = tabsR.withTrimmedLeft (tw * 6.f + 6.f);
+    if (auto* dp = depthParam (lane))
+    {
+        const float v = dp->convertFrom0to1 (dp->getValue());
+        g.setFont (font (10.5f, true)); g.setColour (col::text);
+        g.drawText ("LANE DEPTH  " + String (v, 2) + "  (drag)", depthR, Justification::centred);
+    }
+    else { g.setFont (font (10.5f)); g.setColour (col::dim); g.drawText ("chance that a step plays", depthR, Justification::centred); }
+    bars = r.reduced (4.f);
+    const int nSteps = (int) proc.getParam ("steps");
+    const int cur = proc.engine.uiStep.load (std::memory_order_relaxed);
+    const float cw = bars.getWidth() / sq::kMaxSteps;
+    const bool centred = lane < 4;
+    for (int i = 0; i < sq::kMaxSteps; ++i)
+    {
+        auto* p = stepParam (lane, i); if (! p) continue;
+        const float v = p->convertFrom0to1 (p->getValue());
+        auto col = Rectangle<float> (bars.getX() + cw * i + 1.f, bars.getY(), cw - 2.f, bars.getHeight());
+        g.setColour (i < nSteps ? Colour (0xff181030) : Colour (0xff100a1c)); g.fillRect (col);
+        const float base = centred ? col.getCentreY() : col.getBottom();
+        const float y = col.getBottom() - v * col.getHeight();
+        g.setColour ((i == cur ? col::gold : col::lime).withAlpha (i < nSteps ? 0.85f : 0.25f));
+        g.fillRect (Rectangle<float>::leftTopRightBottom (col.getX(), jmin (y, base), col.getRight(), jmax (y, base)));
+    }
+    if (centred) { g.setColour (col::dim.withAlpha (0.4f)); g.drawHorizontalLine ((int) bars.getCentreY(), bars.getX(), bars.getRight()); }
+}
+
+void LaneEditor::setAt (Point<float> pt, bool reset)
+{
+    const int i = jlimit (0, sq::kMaxSteps - 1, (int) ((pt.x - bars.getX()) / (bars.getWidth() / sq::kMaxSteps)));
+    auto* p = stepParam (lane, i); if (! p) return;
+    float v = jlimit (0.f, 1.f, (bars.getBottom() - pt.y) / bars.getHeight());
+    if (reset) v = lane < 4 ? 0.5f : (lane == 4 ? 1.f : 0.f);
+    if (std::find (touched.begin(), touched.end(), p) == touched.end()) { p->beginChangeGesture(); touched.push_back (p); }
+    p->setValueNotifyingHost (p->convertTo0to1 (v));
+    repaint();
+}
+
+void LaneEditor::mouseDown (const MouseEvent& e)
+{
+    const auto pt = e.position;
+    if (tabsR.contains (pt) && ! depthR.contains (pt))
+    {
+        const float tw = (tabsR.getWidth() - 220.f) / 6.f;
+        lane = jlimit (0, 5, (int) ((pt.x - tabsR.getX()) / tw)); repaint(); return;
+    }
+    if (depthR.contains (pt)) return;
+    setAt (pt, e.mods.isAltDown());
+}
+void LaneEditor::mouseDrag (const MouseEvent& e)
+{
+    if (depthR.contains (e.mouseDownPosition))
+    {
+        if (auto* dp = depthParam (lane))
+        {
+            if (touched.empty()) { dp->beginChangeGesture(); touched.push_back (dp); }
+            dp->setValueNotifyingHost (jlimit (0.f, 1.f, dp->getValue() - (float) e.getDistanceFromDragStartY() * 0.0008f));
+            repaint();
+        }
+        return;
+    }
+    if (bars.contains (e.mouseDownPosition)) setAt (e.position, e.mods.isAltDown());
+}
+void LaneEditor::mouseUp (const MouseEvent&) { for (auto* p : touched) p->endChangeGesture(); touched.clear(); }
+void LaneEditor::mouseDoubleClick (const MouseEvent& e) { if (bars.contains (e.position)) { setAt (e.position, true); mouseUp (e); } }
+} // namespace ui
+
 SqueFMEditor::SqueFMEditor (SqueFMProcessor& p)
     : AudioProcessorEditor (p), proc (p), grid (p), filterDisplay (p), scope (p)
 {
@@ -691,12 +874,54 @@ SqueFMEditor::SqueFMEditor (SqueFMProcessor& p)
     addPanel ("QUICK GUIDE", { 538, yB, 732, hB }, 1, col::gold, Fx, {});
     addPanel ("DELAY", { 10, yB, 520, hB }, 3, col::cyan, Fx, { { "dlMix", "MIX" }, { "dlDiv", "TIME" }, { "dlFb", "FEEDBACK" }, { "dlTone", "TONE" }, { "dlMod", "WOBBLE" }, { "dlPP", "PING PONG" } });
 
+    // ---------------- MAIN page (v4) ----------------
+    const int yM = 72, hM = 300, yN = 380, hN = 320;
+    addPanel ("MAIN SOUND  /  BODY", { 10, yM, 300, hM }, 4, col::cyan, Main, { { "lvA", "OSC A" }, { "waveA", "A WAVE" }, { "lvB", "OSC B" }, { "fineB", "B DETUNE" },
+                                                                             { "lvSub", "SUB" }, { "subShape", "SUB SHAPE" }, { "subPost", "SUB CLEAN" }, { "subOct", "SUB OCT" } });
+    { auto& fp = addPanel ("FM CHARACTER", { 318, yM, 330, hM }, 3, col::gold, Main, { { "fvLevel", "FM VOICE" }, { "fvBright", "BRIGHTNESS" }, { "fvChar", "CHARACTER" },
+                                                                                    { "fvBody", "BODY" }, { "fvDecay", "FM DECAY" }, { "fvFb", "FEEDBACK" } });
+      fp.topExtra = 40; fp.extra = &familyBox; }
+    addPanel ("WOW  /  FILTER", { 656, yM, 300, hM }, 3, col::pink, Main, { { "cutoff", "CUTOFF" }, { "res", "RESONANCE" }, { "fBass", "BASS KEEP" },
+                                                                        { "envamt", "ENV AMT" }, { "fd", "ENV DECAY" }, { "drive", "PRE DRIVE" } });
+    addPanel ("BITE  /  GROWL", { 964, yM, 306, hM }, 2, col::pink, Main, { { "satDrive", "GROWL" }, { "satMix", "PARALLEL" }, { "satAsym", "ASYM" }, { "satFold", "FOLD" } });
+    { auto& lp = addPanel ("FILTER LFO  >  CUTOFF   (dedicated, independent of envelope and sequencer)", { 10, yN, 800, hN }, 7, col::pink, Main,
+                           { { "flOn", "ON" }, { "flMode", "BPM / HZ" }, { "flSync", "BPM RATE" }, { "flHz", "HZ RATE" }, { "flShape", "SHAPE" }, { "flAmt", "AMOUNT" }, { "flBip", "BIPOLAR" },
+                             { "flPhase", "PHASE" }, { "flOffset", "OFFSET" }, { "flSmooth", "SMOOTH" }, { "flRise", "RISE" }, { "flRetrig", "RETRIG" }, { "flFm", "LFO > FM" }, { "slope", "SLOPE" } });
+      lp.topExtra = 110; lp.extra = &flView; }
+    addPanel ("MOVEMENT", { 818, yN, 220, hN }, 2, col::lime, Main, { { "seqOn", "SEQ ON" }, { "seqDepth", "SEQ > CUTOFF" }, { "lnFm", "SEQ > FM" }, { "accAmt", "ACCENT" } });
+    addPanel ("SPACE", { 1046, yN, 224, hN }, 2, col::violet, Main, { { "dlMix", "DELAY" }, { "dlDiv", "TIME" }, { "rvMix", "REVERB" }, { "fvWidth", "FM WIDTH" } });
+
+    // ---------------- FM page (v4) ----------------
+    { auto& vp = addPanel ("FM VOICE  /  4 OPERATORS", { 10, yM, 470, hM }, 4, col::gold, Fm,
+                           { { "fvLevel", "LEVEL" }, { "fvAlgo", "ALGORITHM" }, { "fvRoute", "ROUTE" }, { "fvBright", "BRIGHTNESS" },
+                             { "fvChar", "CHARACTER" }, { "fvBody", "BODY" }, { "fvDecay", "DECAY" }, { "fvFb", "FEEDBACK" },
+                             { "fvWidth", "WIDTH" }, { "fvVel", "VEL > TIMBRE" }, { "fvKey", "KEY SCALE" }, { "fvLowCut", "LOW CUT" } });
+      vp.topExtra = 40; vp.extra = &familyBox2; }
+    { auto& ap = addPanel ("ALGORITHM", { 488, yM, 400, hM }, 1, col::gold, Fm, {}); ap.extra = &algoView; }
+    addPanel ("FM MOVEMENT", { 896, yM, 374, hM }, 2, col::lime, Fm, { { "lnFm", "SEQ > FM" }, { "lnChar", "SEQ > CHARACTER" }, { "flFm", "FILTER LFO > FM" }, { "accAmt", "ACCENT" } });
+    for (int i = 0; i < 4; ++i)
+    {
+        const std::string o = "op" + std::to_string (i + 1);
+        auto id = [&o] (const char* w2) { return strdup ((o + w2).c_str()); };
+        addPanel ("OP " + String (i + 1) + (i == 0 ? "   (always a carrier)" : (i == 3 ? "   (feedback)" : "")), { 10 + i * 316, yN, 308, hN }, 4, i == 0 ? col::cyan : col::gold, Fm,
+                  { { id ("ratio"), "RATIO" }, { id ("fine"), "FINE" }, { id ("level"), "LEVEL" }, { id ("s"), "SUSTAIN" },
+                    { id ("a"), "ATTACK" }, { id ("d"), "DECAY" }, { id ("r"), "RELEASE" } });
+    }
+
     // ---------------- always visible footer ----------------
     addPanel ("MACROS", { 10, 708, 560, 142 }, 4, col::gold, Always, { { "m1", "MACRO 1" }, { "m2", "MACRO 2" }, { "m3", "MACRO 3" }, { "m4", "MACRO 4" } });
     addPanel ("MASTER", { 578, 708, 340, 142 }, 4, col::pink, Always, { { "out", "OUTPUT" }, { "glide", "GLIDE" }, { "legato", "LEGATO" }, { "bend", "BEND" } });
     { auto& sp = addPanel ("LIVE", { 926, 708, 344, 142 }, 1, col::pink, Always, {}); sp.extra = &scope; }
 
     content.addAndMakeVisible (grid); content.addAndMakeVisible (filterDisplay); content.addAndMakeVisible (scope);
+    for (auto* c : std::initializer_list<Component*> { &flView, &algoView, &laneEditor, &familyBox, &familyBox2 }) content.addAndMakeVisible (c);
+    for (auto* fb : { &familyBox, &familyBox2 })
+    {
+        fb->setTextWhenNothingSelected ("FM SOUND: choose a family...");
+        for (int f = 0; f < sq::kNumFmFamilies; ++f) fb->addItem (sq::kFmFamilyNames[f], f + 1);
+        fb->setColour (ComboBox::arrowColourId, col::gold);
+        fb->onChange = [this, fb] { const int f = fb->getSelectedId() - 1; if (f >= 0) proc.applyFmFamily (f); };
+    }
     for (auto& v : lfoViews) content.addAndMakeVisible (*v);
 
     // header
@@ -716,17 +941,18 @@ SqueFMEditor::SqueFMEditor (SqueFMProcessor& p)
     clearBtn.onClick = [this] { proc.clearSteps(); };
     for (auto* b : { &randBtn, &mutateBtn, &clearBtn }) content.addAndMakeVisible (*b);
 
-    const char* tabNames[] = { "SYNTH", "SEQUENCER", "MOD", "FX" };
-    for (int i = 0; i < 4; ++i)
+    const char* tabNames[] = { "MAIN", "FM", "SYNTH", "SEQUENCER", "MOD", "FX" };
+    static const Page tabPages[] = { Main, Fm, Synth, Seq, Mod, Fx };
+    for (int i = 0; i < 6; ++i)
     {
         tabs[(size_t) i].setButtonText (tabNames[i]);
-        tabs[(size_t) i].onClick = [this, i] { showPage ((Page) i); };
+        tabs[(size_t) i].onClick = [this, i] { showPage (tabPages[i]); };
         content.addAndMakeVisible (tabs[(size_t) i]);
     }
 
     layoutPanels();
     buildBackground();
-    showPage (Seq);
+    showPage (Main);
 
     setResizable (true, true);
     setResizeLimits (W / 2, H / 2, W * 2, H * 2);
@@ -765,7 +991,7 @@ void SqueFMEditor::layoutPanels()
         auto area = p.r.reduced (10).withTrimmedTop (24);
         if (p.extra != nullptr && p.items.empty())
         {
-            if (p.extra == &grid) { area.removeFromTop (8); grid.setBounds (area); }
+            if (p.extra == &grid) { area.removeFromTop (8); grid.setBounds (area.removeFromTop (area.getHeight() - 170)); area.removeFromTop (8); laneEditor.setBounds (area); }
             else p.extra->setBounds (area);
             continue;
         }
@@ -783,10 +1009,10 @@ void SqueFMEditor::layoutPanels()
     for (int i = 0; i < sq::kMatrixSlots; ++i)
         matrixRows[(size_t) i]->setBounds (matrixArea.getX(), matrixArea.getY() + i * rowH, matrixArea.getWidth(), rowH);
 
-    presetBox.setBounds (470, 18, 300, 30);
-    prevBtn.setBounds (432, 18, 32, 30);
-    nextBtn.setBounds (776, 18, 32, 30);
-    for (int i = 0; i < 4; ++i) tabs[(size_t) i].setBounds (W - 10 - (4 - i) * 112, 18, 106, 32);
+    prevBtn.setBounds (378, 18, 28, 30);
+    presetBox.setBounds (410, 18, 266, 30);
+    nextBtn.setBounds (680, 18, 28, 30);
+    for (int i = 0; i < 6; ++i) tabs[(size_t) i].setBounds (W - 10 - (6 - i) * 92, 18, 88, 32);
     // sequencer tools sit in the grid panel's title bar
     randBtn.setBounds (1270 - 3 * 92 - 10, 72 + 4, 86, 22);
     mutateBtn.setBounds (1270 - 2 * 92 - 10, 72 + 4, 86, 22);
@@ -796,7 +1022,8 @@ void SqueFMEditor::layoutPanels()
 void SqueFMEditor::showPage (Page pg)
 {
     page = pg;
-    for (int i = 0; i < 4; ++i) tabs[(size_t) i].setToggleState (i == (int) pg, dontSendNotification);
+    static const Page tabPages[] = { Main, Fm, Synth, Seq, Mod, Fx };
+    for (int i = 0; i < 6; ++i) tabs[(size_t) i].setToggleState (tabPages[i] == pg, dontSendNotification);
     for (auto& p : panels)
     {
         const bool vis = p.page == pg || p.page == Always;
@@ -804,6 +1031,7 @@ void SqueFMEditor::showPage (Page pg)
         if (p.extra) p.extra->setVisible (vis);
     }
     for (auto& r : matrixRows) r->setVisible (pg == Mod);
+    laneEditor.setVisible (pg == Seq);
     for (auto* b : { &randBtn, &mutateBtn, &clearBtn }) b->setVisible (pg == Seq);
     content.repaint();
 }
@@ -916,7 +1144,10 @@ void SqueFMEditor::resized() { content.setTransform (AffineTransform::scale ((fl
 
 void SqueFMEditor::timerCallback()
 {
-    if (page == Seq) grid.repaint();
+    flView.push();
+    if (page == Main) flView.repaint();
+    if (page == Fm) algoView.repaint();
+    if (page == Seq) { grid.repaint(); laneEditor.repaint(); }
     if (page == Synth) filterDisplay.repaint();
     if (page == Mod) { for (auto& v : lfoViews) v->repaint(); for (auto& r : matrixRows) r->repaint(); }
     scope.repaint();
@@ -939,6 +1170,8 @@ void SqueFMEditor::timerCallback()
     auto dimIf = [this] (const char* id, bool active) { if (auto* c = findCell (id)) c->setAlpha (active ? 1.f : 0.35f); };
     const bool fmHz = proc.getParam ("fmMode") > 0.5f;
     dimIf ("fmRatio", ! fmHz); dimIf ("fmFine", ! fmHz); dimIf ("fmHz", fmHz);
+    const bool flHz = proc.getParam ("flMode") > 0.5f;
+    dimIf ("flSync", ! flHz); dimIf ("flHz", flHz);
     const bool ck = proc.getParam ("combKey") > 0.5f;
     dimIf ("combSemi", ck); dimIf ("combHz", ! ck);
     for (int i = 0; i < sq::kNumLfos; ++i)

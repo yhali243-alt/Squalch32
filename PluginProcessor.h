@@ -44,6 +44,7 @@ public:
     void randomizeSteps();
     void mutateSteps();
     void clearSteps();
+    void applyFmFamily (int family);   // loads an FM sound family into the FM voice params
     void setParam (const juce::String& id, float plainValue);
     float getParam (const juce::String& id) const;
 

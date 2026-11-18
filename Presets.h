@@ -32,6 +32,38 @@ namespace pr
     inline void lfoHz (Params& p, int i, int shape, float hz) { auto& l = p.lfo[(size_t) i]; l.mode = 1; l.shape = shape; l.hz = hz; }
 }
 
+// ---------------------------------------------------------------- FM families --
+inline constexpr const char* kFmFamilyNames[] = { "Warm FM", "Metallic FM", "Glass FM", "Hi-Tech FM", "FM Growl",
+                                                  "FM Creature", "FM Percussion", "FM Digital Noise", "Vocal / Formant FM", "Aggressive FM Lead" };
+constexpr int kNumFmFamilies = 10;
+
+// Loads a starting operator architecture for one FM sound family into p (voice level is kept if already set).
+inline void applyFmFamily (Params& p, int fam)
+{
+    struct O { float r, lv, a, d, s, rl; };
+    auto set = [&p] (int algo, float bright, float chr, float fb, float body, std::initializer_list<O> ops)
+    {
+        p.fvAlgo = algo; p.fvBright = bright; p.fvChar = chr; p.fvFb = fb; p.fvBody = body;
+        int i = 0;
+        for (const auto& o : ops) { auto& q = p.op[(size_t) i++]; q.ratio = o.r; q.fine = 0.f; q.level = o.lv; q.a = o.a; q.d = o.d; q.s = o.s; q.r = o.rl; }
+        if (p.fvLevel < 0.01f) p.fvLevel = 0.7f;
+    };
+    switch (fam)
+    {
+        case 0: set (0, 0.8f, 0.f,  0.f,  0.3f, { { 1, 1.f, .002f, .8f, .8f, .3f }, { 1, .45f, .002f, .7f, .35f, .3f }, { 2, .2f, .002f, .4f, .2f, .3f }, { 1, 0, .002f, .3f, 0, .3f } }); break;
+        case 1: set (1, 1.1f, 0.4f, .2f,  0.1f, { { 1, 1.f, .001f, .9f, .7f, .3f }, { 3.5f, .6f, .001f, .5f, .2f, .3f }, { 7.07f, .4f, .001f, .35f, .1f, .2f }, { 11.3f, .3f, .001f, .2f, 0, .2f } }); break;
+        case 2: set (3, 0.7f, 0.f,  0.f,  0.f,  { { 1, .8f, .001f, 1.2f, .5f, .4f }, { 4, .3f, .001f, .3f, 0, .3f }, { 2, .6f, .001f, 1.5f, .3f, .4f }, { 14, .25f, .001f, .15f, 0, .2f } }); break;
+        case 3: set (0, 1.6f, 0.25f, .35f, 0.f, { { 1, 1.f, .0005f, .25f, .3f, .08f }, { 2, .7f, .0005f, .08f, .1f, .05f }, { 5.5f, .6f, .0005f, .05f, 0, .04f }, { 13, .5f, .0005f, .03f, 0, .03f } }); break;
+        case 4: set (2, 1.2f, 0.f,  .45f, 0.4f, { { .5f, 1.f, .003f, 1.f, .9f, .2f }, { 1, .7f, .003f, .8f, .6f, .2f }, { 1.5f, .5f, .003f, .6f, .5f, .2f }, { .5f, .45f, .003f, .7f, .6f, .2f } }); break;
+        case 5: set (6, 1.f,  0.5f, .3f,  0.2f, { { 1, 1.f, .002f, 1.5f, .6f, .3f }, { 1.41f, .6f, .02f, 1.2f, .4f, .3f }, { .71f, .5f, .002f, .6f, .3f, .3f }, { 2.83f, .4f, .05f, .9f, .2f, .3f } }); break;
+        case 6: set (4, 1.4f, 0.1f, .2f,  0.f,  { { 1, 1.f, .0005f, .18f, 0, .1f }, { 1.6f, .6f, .0005f, .12f, 0, .08f }, { 2.4f, .4f, .0005f, .09f, 0, .06f }, { 3.7f, .9f, .0005f, .05f, 0, .04f } }); break;
+        case 7: set (0, 2.5f, 1.f,  1.f,  0.f,  { { 1, 1.f, .001f, .6f, .6f, .1f }, { 7.9f, .9f, .001f, .5f, .7f, .1f }, { 13.7f, .9f, .001f, .5f, .7f, .1f }, { 19.1f, 1.f, .001f, .5f, .8f, .1f } }); break;
+        case 8: set (5, 0.9f, 0.f,  .1f,  0.2f, { { 1, .9f, .01f, 1.f, .8f, .3f }, { 3, .45f, .01f, .8f, .5f, .3f }, { 1, .3f, .01f, .8f, .5f, .3f }, { 6, .35f, .01f, .9f, .6f, .3f } }); break;
+        case 9: set (1, 1.3f, 0.05f, .5f, 0.2f, { { 1, 1.f, .002f, 1.f, .9f, .2f }, { 1, .8f, .002f, .9f, .6f, .2f }, { 2, .5f, .002f, .4f, .3f, .2f }, { 3, .4f, .002f, .2f, .2f, .2f } }); break;
+        default: break;
+    }
+}
+
 inline std::vector<Preset> factoryPresets()
 {
     using namespace pr;
@@ -214,6 +246,65 @@ inline std::vector<Preset> factoryPresets()
         { "Comb Insects", 7.4f }, { "Talking Frog", 0.5f }, { "Disco Valley Acid", -2.0f }, { "Night Full-On Gallop", 1.4f },
         { "Hitech Clean Bass", 4.6f } };
     for (auto& pr : v) for (const auto& t : kTrim) if (pr.name == t.first) pr.p.outGainDb += t.second;
+
+    // ================= v4 reference patches =================
+    { // A - FAT WOW: saw stack + clean sine sub, resonant 24 dB ladder swept by the dedicated filter LFO
+        Params p;
+        p.waveA = 1.f; p.waveB = 1.f; p.levelA = 0.4f; p.levelB = 0.28f; p.fineB = 7.f; p.octB = 0;
+        p.levelSub = 0.42f; p.subShape = 1; p.subPost = true; p.subOct = 0;
+        p.cutoff = 150.f; p.resonance = 0.9f; p.slope = 3.f; p.drive = 0.f; p.filterBass = 0.35f; p.keyTrack = 0.5f;
+        p.envAmount = 0.35f; p.fA = 0.004f; p.fD = 0.35f; p.fS = 0.f; p.fR = 0.2f; p.velToFilter = 0.3f;
+        p.aA = 0.004f; p.aD = 0.3f; p.aS = 0.9f; p.aR = 0.15f;
+        p.flOn = true; p.flMode = 0; p.flSync = L4; p.flShape = SINE; p.flAmt = 3.9f; p.flBipolar = false; p.flSmooth = 0.15f; p.flRetrig = true;
+        p.satDrive = 0.35f; p.satMix = 0.45f; p.satAsym = 0.25f;
+        p.seqOn = false; p.glide = 0.03f; p.reverbMix = 0.06f; p.outGainDb = -6.f;
+        mod (p, 0, SrcMacro1, DstCutoff, 0.5f); mod (p, 1, SrcMacro2, DstRes, 0.4f); mod (p, 2, SrcMacro3, DstDrive, 0.6f);
+        v.push_back ({ "A Fat WOW", p });
+    }
+    { // B - AGGRESSIVE SWAMP: growl FM into the ladder, stepped organic filter motion, asymmetric growl
+        Params p;
+        p.waveA = 1.4f; p.levelA = 0.7f; p.levelB = 0.25f; p.waveB = 1.f; p.octB = -1; p.fineB = -6.f;
+        p.levelSub = 0.5f; p.subShape = 1; p.subPost = true;
+        applyFmFamily (p, 4); p.fvLevel = 0.45f; p.fvRoute = 0; p.fvBright = 1.1f;
+        p.cutoff = 260.f; p.resonance = 0.66f; p.slope = 3.f; p.drive = 0.4f; p.filterBass = 0.6f; p.keyTrack = 0.4f; p.envAmount = 0.2f; p.fD = 0.2f;
+        p.flOn = true; p.flSync = L16; p.flShape = 6; p.flAmt = 2.2f; p.flBipolar = true; p.flSmooth = 0.3f; p.flRetrig = false; p.flFm = 0.35f;
+        p.seqOn = true; p.seqDepth = 0.45f; p.numSteps = 16; p.stepDiv = 3; p.seqSmooth = 0.12f;
+        steps (p, { S (.25f, .55f, SQUELCH, S16), S (.30f, .45f, SMOOTH, S32), S (.35f, .35f, SINE, HOLD), S (.22f, .62f, SQUELCH, S32T),
+                    S (.28f, .5f, TRI, S16), S (.2f, .6f, CHAOS, S32), S (.33f, .33f, SINE, HOLD), S (.26f, .56f, SMOOTH, S16) });
+        p.satDrive = 0.45f; p.satMix = 0.6f; p.satAsym = 0.45f; p.satFold = 0.15f;
+        p.aA = 0.003f; p.aD = 0.25f; p.aS = 0.85f; p.aR = 0.12f;
+        p.phaserMix = 0.18f; p.phaserRate = 0.07f; p.reverbMix = 0.08f; p.outGainDb = -2.f;
+        mod (p, 0, SrcMacro1, DstCutoff, 0.5f); mod (p, 1, SrcMacro2, DstFmIndex, 0.6f); mod (p, 2, SrcMacro3, DstDrive, 0.6f);
+        v.push_back ({ "B Aggressive Swamp", p });
+    }
+    { // C - HI-TECH FM CREATURE: cross-ring operators, clean parallel route, index shaped by envelopes + filter LFO
+        Params p;
+        p.levelA = 0.f; p.levelB = 0.f; p.levelSub = 0.f;
+        applyFmFamily (p, 5); p.fvLevel = 0.9f; p.fvRoute = 1; p.fvBright = 0.75f; p.fvChar = 0.18f; p.fvFb = 0.15f; p.fvWidth = 0.6f; p.fvDecay = 0.6f; p.fvVel = 0.5f; p.fvLowCut = 0.8f;
+        p.op[1].d = 0.35f; p.op[1].s = 0.1f; p.op[3].a = 0.0005f; p.op[3].d = 0.12f; p.op[3].s = 0.05f;
+        p.flOn = true; p.flSync = L16; p.flShape = SH; p.flAmt = 0.f; p.flFm = 0.4f; p.flRetrig = true;
+        p.pitchEnvAmt = 7.f; p.pitchEnvDecay = 0.025f;
+        p.aA = 0.0008f; p.aD = 0.4f; p.aS = 0.f; p.aR = 0.12f;
+        p.seqOn = false; p.delayMix = 0.18f; p.delayDiv = 4; p.delayFb = 0.35f; p.pingPong = true; p.reverbMix = 0.1f; p.outGainDb = 3.f;
+        mod (p, 0, SrcMacro1, DstFmIndex, 0.6f); mod (p, 1, SrcMacro2, DstFmRatio, 0.25f);
+        v.push_back ({ "C HiTech FM Creature", p });
+    }
+    { // D - PSYCHEDELIC FM LEAD: aggressive lead family, sequenced FM timbre + character lanes, slow filter LFO
+        Params p;
+        p.levelA = 0.25f; p.waveA = 1.f; p.levelB = 0.f; p.levelSub = 0.15f; p.subShape = 1; p.subPost = true;
+        applyFmFamily (p, 9); p.fvLevel = 0.75f; p.fvRoute = 0; p.fvWidth = 0.7f; p.fvBright = 0.85f; p.fvFb = 0.3f; p.fvLowCut = 0.6f;
+        p.cutoff = 1800.f; p.resonance = 0.35f; p.slope = 2.f; p.drive = 0.25f; p.filterBass = 0.4f; p.keyTrack = 0.6f; p.envAmount = 0.25f; p.fD = 0.5f;
+        p.flOn = true; p.flSync = LBAR; p.flShape = TRI; p.flAmt = 1.6f; p.flBipolar = true; p.flRetrig = false;
+        p.seqOn = true; p.seqDepth = 0.f; p.numSteps = 16; p.stepDiv = 3; p.seqSmooth = 0.15f;
+        p.lnFm = 0.6f; p.lnChar = 0.35f; p.accAmt = 0.6f;
+        const float fmLane[16] = { .2f, .5f, .8f, .4f, .9f, .3f, .6f, 1.f, .2f, .7f, .4f, .9f, .5f, .3f, .8f, .6f };
+        const float chLane[16] = { 0, 0, .2f, 0, 0, .6f, 0, 0, .1f, 0, .8f, 0, 0, 0, .4f, 1.f };
+        for (int i = 0; i < kMaxSteps; ++i) { auto& st = p.steps[(size_t) i]; st.fmv = fmLane[i % 16]; st.chr = 0.5f + chLane[i % 16] * 0.5f; st.acc = (i % 4 == 2) ? 1.f : 0.f; }
+        p.glide = 0.06f; p.aA = 0.004f; p.aD = 0.4f; p.aS = 0.8f; p.aR = 0.25f;
+        p.delayMix = 0.28f; p.delayDiv = 7; p.delayFb = 0.45f; p.pingPong = true; p.reverbMix = 0.15f; p.reverbSize = 0.75f; p.outGainDb = -1.f;
+        mod (p, 0, SrcMacro1, DstFmIndex, 0.6f); mod (p, 1, SrcMacro2, DstCutoff, 0.5f);
+        v.push_back ({ "D Psy FM Lead", p });
+    }
     return v;
 }
 } // namespace sq
