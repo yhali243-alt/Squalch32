@@ -1,0 +1,27 @@
+name: Build Squalch32 (multi)
+on:
+  push:
+    paths: ['.github/workflows/multi.yml']
+  workflow_dispatch:
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, macos-15, macos-26, macos-15-intel]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64"
+      - name: Build
+        run: cmake --build build --config Release --target Squalch32_VST3 --parallel 4
+      - name: Package
+        run: |
+          codesign --force --deep -s - build/Squalch32_artefacts/Release/VST3/Squalch32.vst3
+          ditto -c -k --keepParent build/Squalch32_artefacts/Release/VST3/Squalch32.vst3 Squalch32-VST3-mac.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Squalch32-macOS-${{ matrix.os }}
+          path: Squalch32-VST3-mac.zip
